@@ -3,20 +3,60 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"os"
+	"time"
 )
 
-// UserData handles the full profile matrix
 type UserData struct {
-	FirstName string `json:"firstName"`
-	LastName  string `json:"lastName"`
-	Email     string `json:"email"`
-	Password  string `json:"password"`
+	ID        int       `json:"id"`
+	FirstName string    `json:"first_name"`
+	LastName  string    `json:"last_name"`
+	Email     string    `json:"email"`
+	Password  string    `json:"password"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type AccountsData struct {
+	ID            int    `json:"id"`
+	UserID        int    `json:"user_id"`
+	AccountNumber string `json:"acc_number"`
+	Balance       int    `json:"balance"`
+	AccountType   string `json:"acc_type"`
+	Status        string `json:"status"`
+}
+
+type Transactions struct {
+	ID              int       `json:"id"`
+	AccountID       int       `json:"account_id"`
+	TransactionType string    `json:"transaction_type"`
+	Amount          int       `json:"amount"`
+	Sender          string    `json:"sender"`
+	Recipient       string    `json:"recipient"`
+	Status          string    `json:"status"`
+	Reference       string    `json:"reference"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+type Bills struct {
+	ID        int       `json:"id"`
+	AccountID int       `json:"account_id"`
+	Provider  string    `json:"provider"`
+	Amount    int       `json:"amount"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type Notifications struct {
+	ID        int       `json:"id"`
+	UserID    int       `json:"user_id"`
+	Message   string    `json:"message"`
+	IsRead    bool      `json:"is_read"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 func main() {
-	// Ensure the data directory exists right away
 	os.MkdirAll("data", os.ModePerm)
 
 	http.HandleFunc("/api/register", handleRegister)
@@ -27,7 +67,6 @@ func main() {
 }
 
 func handleRegister(w http.ResponseWriter, r *http.Request) {
-	// Setup CORS headers
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
@@ -36,37 +75,81 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var incomingData UserData
-	json.NewDecoder(r.Body).Decode(&incomingData)
+	if err := json.NewDecoder(r.Body).Decode(&incomingData); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error": "Malformed JSON request payload."}`))
+		return
+	}
 
-	// 1. Read existing users array from file
+	if incomingData.FirstName == "" || incomingData.LastName == "" || incomingData.Email == "" || incomingData.Password == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error": "Registration rejected: All fields (First Name, Last Name, Email, Password) are strictly required."}`))
+		return
+	}
+
 	var usersList []UserData
 	fileBytes, err := os.ReadFile("data/users.json")
-
-	// If the file exists, parse its current contents into our list array
 	if err == nil && len(fileBytes) > 0 {
 		json.Unmarshal(fileBytes, &usersList)
 	}
 
-	// 2. Append the new user to our array list
+	nextUserID := 1
+	if len(usersList) > 0 {
+		nextUserID = usersList[len(usersList)-1].ID + 1
+	}
+
+	incomingData.ID = nextUserID
+	incomingData.CreatedAt = time.Now()
 	usersList = append(usersList, incomingData)
 
-	// 3. Convert the updated array list back to pretty JSON text
 	fileData, _ := json.MarshalIndent(usersList, "", "  ")
-
-	// 4. Save the updated list array back into the storage file path
 	err = os.WriteFile("data/users.json", fileData, 0644)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"error": "Failed to write user data file on host storage"}`))
+		w.Write([]byte(`{"error": "Failed to write user data file"}`))
 		return
 	}
 
-	fmt.Printf("Registered User: %s %s Saved to list.\n", incomingData.FirstName, incomingData.LastName)
+	var accountsList []AccountsData
+	accBytes, err := os.ReadFile("data/accounts.json")
+	if err == nil && len(accBytes) > 0 {
+		json.Unmarshal(accBytes, &accountsList)
+	}
+
+	nextAccountID := 1
+	if len(accountsList) > 0 {
+		nextAccountID = accountsList[len(accountsList)-1].ID + 1
+	}
+
+	rSource := rand.NewSource(time.Now().UnixNano())
+	rGen := rand.New(rSource)
+	generatedAccNum := fmt.Sprintf("100%07d", rGen.Intn(10000000))
+
+	newAccount := AccountsData{
+		ID:            nextAccountID,
+		UserID:        incomingData.ID,
+		AccountNumber: generatedAccNum,
+		Balance:       1000,
+		AccountType:   "Checking",
+		Status:        "Active",
+	}
+	accountsList = append(accountsList, newAccount)
+
+	accFileData, _ := json.MarshalIndent(accountsList, "", "  ")
+	err = os.WriteFile("data/accounts.json", accFileData, 0644)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error": "Failed to create bank account linkage"}`))
+		return
+	}
+
+	fmt.Printf("Registered User ID %d: %s %s. Created Account: %s\n",
+		incomingData.ID, incomingData.FirstName, incomingData.LastName, generatedAccNum)
 
 	fullName := incomingData.FirstName + " " + incomingData.LastName
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	responseJSON := fmt.Sprintf(`{"message": "Registration saved successfully!", "name": "%s"}`, fullName)
+	responseJSON := fmt.Sprintf(`{"message": "Registration saved successfully! Account %s opened.", "name": "%s"}`, generatedAccNum, fullName)
 	w.Write([]byte(responseJSON))
 }
 
@@ -87,7 +170,6 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Read the saved array file from storage disk
 	fileBytes, err := os.ReadFile("data/users.json")
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -95,11 +177,9 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Parse the file data into a structured slice array list
 	var usersList []UserData
 	json.Unmarshal(fileBytes, &usersList)
 
-	// 3. Loop through the array to find a match
 	var userFound bool
 	var matchedUser UserData
 
@@ -111,15 +191,37 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 4. Send back the appropriate response validation status
 	if userFound {
 		fullName := matchedUser.FirstName + " " + matchedUser.LastName
-		fmt.Printf("User %s logged in successfully.\n", fullName)
+		fmt.Printf("User %s (ID: %d) logged in successfully.\n", fullName, matchedUser.ID)
+		accountNumber := "N/A"
+		balance := 0
+
+		accBytes, err := os.ReadFile("data/accounts.json")
+		if err == nil && len(accBytes) > 0 {
+			var accountsList []AccountsData
+			json.Unmarshal(accBytes, &accountsList)
+
+			for _, acc := range accountsList {
+				if acc.UserID == matchedUser.ID {
+					accountNumber = acc.AccountNumber
+					balance = acc.Balance
+					break
+				}
+			}
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		responseJSON := fmt.Sprintf(`{"message": "Login verified!", "name": "%s"}`, fullName)
-		w.Write([]byte(responseJSON))
+
+		responsePayload := map[string]interface{}{
+			"message":        "Login verified!",
+			"name":           fullName,
+			"account_number": accountNumber,
+			"balance":        balance,
+		}
+		json.NewEncoder(w).Encode(responsePayload)
+
 	} else {
 		w.WriteHeader(http.StatusUnauthorized)
 		w.Write([]byte(`{"error": "Invalid email or password credentials."}`))

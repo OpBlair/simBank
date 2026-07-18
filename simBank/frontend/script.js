@@ -10,7 +10,6 @@ const authSubtitle = document.getElementById('auth-subtitle');
 const authSubmitBtn = document.getElementById('auth-submit-btn');
 const toggleText = document.getElementById('auth-toggle-text');
 
-// Reference name fields for validation control
 const firstNameInput = document.getElementById('reg-firstname');
 const lastNameInput = document.getElementById('reg-lastname');
 
@@ -26,8 +25,7 @@ function toggleAuthMode(e) {
         registerFields.classList.remove('hidden');
         authSubmitBtn.innerText = "Register";
         toggleText.innerHTML = `Already have an account? <a href="#" onclick="toggleAuthMode(event)">Login here</a>`;
-        
-        // Dynamically enforce validation rules
+
         firstNameInput.required = true;
         lastNameInput.required = true;
     } else {
@@ -37,7 +35,6 @@ function toggleAuthMode(e) {
         authSubmitBtn.innerText = "Login";
         toggleText.innerHTML = `Don't have an account? <a href="#" onclick="toggleAuthMode(event)">Register here</a>`;
         
-        // Remove validation requirements for login mode
         firstNameInput.required = false;
         lastNameInput.required = false;
     }
@@ -56,8 +53,8 @@ async function handleAuth(e) {
     };
     
     if (!isLoginMode) {
-        payload.firstName = firstNameInput.value;
-        payload.lastName = lastNameInput.value;
+        payload.first_name = firstNameInput.value;
+        payload.last_name = lastNameInput.value;
     }
 
     try {
@@ -70,8 +67,17 @@ async function handleAuth(e) {
         const data = await response.json();
 
         if (response.ok) {
-            alert(`Response from Go: ${data.message}`);
+            alert(`Response: ${data.message}`);
+            
             document.getElementById('user-display-name').innerText = data.name || "User";
+            
+            if (data.account_number) {
+                document.getElementById('user-display-account').innerText = data.account_number;
+                document.getElementById('user-display-balance').innerText = `$${Number(data.balance).toFixed(2)}`;
+            } else {
+                document.getElementById('user-display-account').innerText = "Please log in to view account";
+                document.getElementById('user-display-balance').innerText = "$0.00";
+            }
             
             authContainer.classList.add('hidden');
             appContainer.classList.remove('hidden');
