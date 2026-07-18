@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="style.css">
+    <script defer src="script.js"></script>
+    <title>SimBank - HA Banking Simulator</title>
+</head>
+<body>
+
+    <!-- AUTHENTICATION CONTAINER (LOGIN / REGISTER) -->
+    <div id="auth-container" class="auth-wrapper">
+        <div class="auth-card">
+            <h2 id="auth-title">Login to SimBank</h2>
+            <p id="auth-subtitle">Access your high-availability secure portal</p>
+            
+            <form id="auth-form" onsubmit="handleAuth(event)">
+                <!-- Registration Toggle Fields -->
+                <div id="register-fields" class="hidden">
+                    <label for="reg-firstname">First Name</label>
+                    <input type="text" id="reg-firstname" placeholder="John">
+
+                    <label for="reg-lastname">Last Name</label>
+                    <input type="text" id="reg-lastname" placeholder="Doe">
+                </div>
+
+                <label for="auth-email">Email Address</label>
+                <input type="email" id="auth-email" required placeholder="name@example.com">
+
+                <label for="auth-password">Password</label>
+                <input type="password" id="auth-password" required placeholder="••••••••">
+
+                <button type="submit" id="auth-submit-btn">Login</button>
+            </form>
+
+            <div class="auth-toggle">
+                <p id="auth-toggle-text">Don't have an account? <a href="#" onclick="toggleAuthMode(event)">Register here</a></p>
+            </div>
+        </div>
+    </div>
+
+    <!-- MAIN SYSTEM INTERFACE (Hidden before authentication) -->
+    <div id="app-container" class="hidden">
+        <!-- SYSTEM HEADER -->
+        <header>
+            <div>
+                <h1>SimBank</h1>
+                <p>High Availability Banking Simulator</p>
+            </div>
+            <div>
+                <p>Active Node: <span>PRIMARY_NODE_01</span></p>
+                <p>Status: <span>ONLINE</span></p>
+            </div>
+        </header>
+
+        <!-- APPLICATION BODY -->
+        <main>
+            <!-- SIDE NAVIGATION -->
+            <aside class="sidebar">
+                <nav>
+                    <ul>
+                        <li id="dashboard"><button onclick="showSection('dashboard-section')">Dashboard</button></li>
+                        <li id="transactions"><button onclick="showSection('transactions-section')">Transactions</button></li>
+                        <li id="bill-payment"><button onclick="showSection('bill-payment-section')">Pay Bills</button></li>
+                        <li id="transaction-logs"><button onclick="showSection('transaction-logs-section')">Transaction Logs</button></li>
+                        <li id="notification"><button onclick="showSection('notifications-section')">Notifications</button></li>
+                        <li id="logout-btn"><button onclick="handleLogout()">Logout</button></li>
+                    </ul>
+                </nav>
+            </aside>
+
+            <!-- MAIN CONTENT AREA -->
+            <section class="content">
+                <!-- DASHBOARD -->
+                <section id="dashboard-section" class="system-section">
+                    <h2>Account Dashboard</h2>
+                    <div>
+                        <h3>Account Holder</h3>
+                        <p id="user-display-name">John Doe</p>
+                    </div>
+                    <div>
+                        <h3>Account Balance</h3>
+                        <p id="user-display-balance">$0.00</p>
+                    </div>
+                    <div>
+                        <h3>Recent Activity</h3>
+                        <p id="user-recent-activity">No transactions available</p>
+                    </div>
+                </section>
+
+                <!-- TRANSACTION MODULE -->
+                <section id="transactions-section" class="system-section">
+                    <h2>Bank Transaction</h2>
+                    <form>
+                        <label>Transaction Type</label>
+                        <select id="tx-type">
+                            <option value="deposit">Deposit</option>
+                            <option value="withdraw">Withdraw</option>
+                            <option value="transfer">Transfer</option>
+                        </select>
+
+                        <label>Amount</label>
+                        <input type="number" id="tx-amount" placeholder="Enter amount">
+
+                        <button type="button" onclick="openPinModal()">Continue</button>
+                    </form>
+                </section>
+
+                <!-- BILL PAYMENT MODULE -->
+                <section id="bill-payment-section" class="system-section">
+                    <h2>Utility Payments</h2>
+                    <form>
+                        <label>Select Utility</label>
+                        <select id="bill-type">
+                            <option value="Electricity">Electricity</option>
+                            <option value="Water">Water</option>
+                            <option value="Internet">Internet</option>
+                        </select>
+
+                        <label>Amount</label>
+                        <input type="number" id="bill-amount" placeholder="Payment amount">
+
+                        <button type="button" onclick="openPinModal()">Continue</button>
+                    </form>
+                </section>
+
+                <!-- AUDIT LOGS -->
+                <section id="transaction-logs-section" class="system-section">
+                    <h2>Transaction History</h2>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Transaction ID</th>
+                                <th>Type</th>
+                                <th>Amount</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="logs-table-body">
+                            <!-- Dynamic data from mock JSON -->
+                        </tbody>
+                    </table>
+                </section>
+
+                <!-- NOTIFICATIONS -->
+                <section id="notifications-section" class="system-section">
+                    <h2>Notifications</h2>
+                    <div id="notifications-list">No notifications</div>
+                </section>
+            </section>
+        </main>
+
+        <!-- PIN CONFIRMATION MODAL -->
+        <div class="pin-modal">
+            <div class="modal-content">
+                <h2>Authorization Required</h2>
+                <p>Enter your security PIN to continue</p>
+                <input type="password" maxlength="4" placeholder="****">
+                <div class="modal-buttons">
+                    <button onclick="confirmTransaction()">Confirm</button>
+                    <button onclick="cancelTransaction()">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

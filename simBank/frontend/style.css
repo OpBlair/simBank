@@ -1,0 +1,333 @@
+/* --- Global Base Styles --- */
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    font-family: "Segoe UI", Arial, sans-serif;
+}
+
+body {
+    height: 100vh;
+    background: #f4f6f8;
+    color: #1f2937;
+    display: flex;
+    flex-direction: column;
+}
+
+/* --- System Header --- */
+header {
+    height: 80px;
+    background: #0f172a;
+    color: white;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 15px 30px;
+    flex-shrink: 0;
+}
+
+header h1 { font-size: 24px; }
+header p { font-size: 14px; }
+header span { color: #38bdf8; font-weight: bold; }
+
+/* --- Main Layout --- */
+main {
+    display: flex;
+    height: calc(100vh - 80px);
+}
+
+/* --- Sidebar Navigation --- */
+.sidebar {
+    width: 240px;
+    background-color: #1e3a8a; 
+    padding: 20px;
+}
+
+.sidebar ul { list-style: none; }
+.sidebar li { margin-bottom: 12px; }
+
+.sidebar button {
+    width: 100%;
+    padding: 12px;
+    background: transparent;
+    border: none;
+    color: #d1d5db;
+    text-align: left;
+    cursor: pointer;
+    border-radius: 8px;
+    font-size: 15px;
+    transition: all 0.2s;
+}
+
+.sidebar button:hover {
+    background: #1e40af;
+    color: white;
+}
+
+/* --- Content Wrapper --- */
+.content {
+    flex: 1;
+    padding: 30px;
+    overflow-y: auto;
+}
+
+.content > section {
+    background: white;
+    padding: 25px;
+    margin-bottom: 25px;
+    border-radius: 12px;
+    border: 1px solid #e5e7eb;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+}
+
+.content > section h2 {
+    margin-top: 0;
+    color: #111827;
+    margin-bottom: 25px;
+}
+
+.system-section {
+    display: none;
+}
+
+.system-section.active {
+    display: block;
+}
+
+/* --- Account Dashboard --- */
+#dashboard-section div {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    background: #f8fafc;
+    padding: 20px;
+    margin-bottom: 15px;
+    border-radius: 10px;
+    border-left: 5px solid #2563eb;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+#dashboard-section div:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+}
+
+#dashboard-section h3 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #64748b;
+    margin-bottom: 6px;
+}
+
+#dashboard-section p {
+    font-size: 20px;
+    font-weight: 600;
+    color: #1f2937;
+}
+
+/* --- Banking Operations (Transactions & Bills) --- */
+.system-section.active#transactions-section,
+.system-section.active#bill-payment-section {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    min-height: 400px;
+}
+
+form {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    width: 100%;
+    max-width: 400px; 
+}
+
+label {
+    font-weight: 600;
+    font-size: 14px;
+}
+
+input, select {
+    padding: 12px;
+    border-radius: 8px;
+    border: 1px solid #cbd5e1;
+    font-size: 15px;
+}
+
+input:focus, select:focus {
+    outline: none;
+    border-color: #2563eb;
+}
+
+form button {
+    background: #2563eb;
+    color: white;
+    border: none;
+    padding: 13px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+form button:hover {
+    background: #1d4ed8;
+}
+
+/* --- Transaction History Logs --- */
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+th {
+    background: #f1f5f9;
+    padding: 12px;
+    text-align: left;
+    font-size: 13px;
+    color: #475569;
+}
+
+td {
+    padding: 12px;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+/* --- Pin Confirmation Modal --- */
+.pin-modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.6);
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+}
+
+.modal-content {
+    width: 350px;
+    background: white;
+    padding: 30px;
+    border-radius: 15px;
+    text-align: center;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+}
+
+.modal-content h2 {
+    margin-top: 0;
+    font-size: 20px;
+}
+
+.modal-content input {
+    width: 100%;
+    padding: 12px;
+    margin: 20px 0;
+    text-align: center;
+    letter-spacing: 8px;
+    font-size: 20px;
+}
+
+.modal-buttons {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+}
+
+.modal-buttons button {
+    width: 100%;
+    padding: 12px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.modal-buttons button:first-of-type {
+    background: #16a34a;
+    color: white;
+}
+
+.modal-buttons button:last-of-type {
+    background: #e5e7eb;
+    color: #475569;
+}
+
+/* --- Authentication Layout --- */
+.auth-wrapper {
+    position: fixed;
+    inset: 0;
+    background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 2000;
+}
+
+.auth-card {
+    background: white;
+    padding: 40px;
+    border-radius: 16px;
+    width: 100%;
+    max-width: 420px;
+    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2), 0 10px 10px -5px rgba(0, 0, 0, 0.1);
+}
+
+.auth-card h2 {
+    color: #111827;
+    font-size: 24px;
+    margin-bottom: 6px;
+    text-align: center;
+}
+
+.auth-card p#auth-subtitle {
+    color: #64748b;
+    font-size: 14px;
+    text-align: center;
+    margin-bottom: 25px;
+}
+
+.auth-toggle {
+    margin-top: 20px;
+    text-align: center;
+    font-size: 14px;
+}
+
+.auth-toggle a {
+    color: #2563eb;
+    text-decoration: none;
+    font-weight: 600;
+}
+
+.auth-toggle a:hover {
+    text-decoration: underline;
+}
+
+/* --- Fix Layout on Register Page --- */
+#register-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    width: 100%;
+}
+
+/* --- Utilities & Visibility overrides --- */
+.hidden {
+    display: none !important;
+}
+
+code {
+    background: #f1f5f9;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 13px;
+}
+
+/* --- Responsive Layout --- */
+@media (max-width: 900px) {
+    .sidebar {
+        width: 180px;
+    }
+}
