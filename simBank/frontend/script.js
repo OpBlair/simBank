@@ -28,6 +28,30 @@ let isLoginMode = true;
 let loggedInAccount = "";
 let pendingTransaction = null; // Staged data before PIN confirmation
 
+/* ===== INITIALIZATION BLOCK ===== */
+document.addEventListener('DOMContentLoaded', () => {
+    // Auto-focus behavior for the segmented PIN setup boxes
+    document.querySelectorAll('.pin-digits-row').forEach(row => {
+        const inputs = row.querySelectorAll('.pin-box');
+        
+        inputs.forEach((input, index) => {
+            // Automatically jump forward on typing a digit
+            input.addEventListener('input', (e) => {
+                if (e.target.value.length === 1 && index < inputs.length - 1) {
+                    inputs[index + 1].focus();
+                }
+            });
+
+            // Automatically jump back on pressing Backspace
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Backspace' && e.target.value.length === 0 && index > 0) {
+                    inputs[index - 1].focus();
+                }
+            });
+        });
+    });
+});
+
 /* ===== AUTHENTICATION MODULE ====== */
 
 // Flips UI between login and registration forms
@@ -97,9 +121,19 @@ async function handleAuth(e) {
                 document.getElementById('user-display-balance').innerText = "$0.00";
             }
             
-            authContainer.classList.add('hidden');
-            appContainer.classList.remove('hidden');
-            showSection("dashboard-section");
+            // Force a user to set up pin after registration.
+            if (!isLoginMode) {
+                authContainer.classList.add('hidden');
+                appContainer.classList.remove('hidden');
+                openSetPinModal();
+            } else {
+                // Regular login goes straight to dashboard
+                authContainer.classList.add('hidden');
+                appContainer.classList.remove('hidden');
+                fetchAndDisplayNotifications();
+                showSection("dashboard-section");
+            }
+
         } else {
             console.log(`Go Server Error: ${data.error}`);
         }
@@ -110,7 +144,6 @@ async function handleAuth(e) {
 }
 
 /* ===== NAVIGATION & TABS ====== */
-
 // Simple SPA tab switcher
 function showSection(sectionId) {
     const sections = document.querySelectorAll('.system-section');
@@ -125,7 +158,11 @@ function showSection(sectionId) {
     }
 
     if (sectionId === 'notifications-section') {
-        fetchAndDisplayNotifications();
+        // First mark all notifications as read in database
+        markNotificationsAsRead().then(() => {
+            // Then fetch updated lists to clear active badge counts
+            fetchAndDisplayNotifications();
+        });
     }
 }
 
@@ -147,10 +184,71 @@ function handleLogout() {
     appContainer.classList.add('hidden');
     authContainer.classList.remove('hidden');
     document.getElementById('auth-form').reset();
+    loggedInAccount = "";
+}
+
+function openSetPinModal(){
+    document.getElementById('setup-pin-modal').style.display = 'flex';
+}
+
+function closeSetPinModal(){
+    document.getElementById('setup-pin-modal').style.display = 'none';
+    document.querySelectorAll('#setup-pin-modal .pin-box').forEach(input => input.value = '');
+}
+
+/* ===== PIN SETUP MODULE ====== */
+
+// Helper function to extract PIN values from the digit rows
+function getPinFromRow(rowId) {
+    let pin = "";
+    document.querySelectorAll(`#${rowId} .pin-box`).forEach(input => {
+        pin += input.value;
+    });
+    return pin;
+}
+
+async function saveAccountPin() {
+    const pin = getPinFromRow('new-pin-row');
+    const confirmPin = getPinFromRow('confirm-pin-row');
+
+    // Validation
+    if (pin.length !== 4 || confirmPin.length !== 4 || isNaN(pin) || isNaN(confirmPin)) {
+        console.log("PIN must be exactly 4 digits.");
+        return;
+    }
+
+    if (pin !== confirmPin) {
+        console.log("PINs do not match. Please try again.");
+        return;
+    }
+
+    const payload = {
+        account_number: loggedInAccount,
+        pin: pin
+    };
+
+    try {
+        const response = await fetch(`${API_BASE_URL}/setup-pin`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+            console.log("PIN successfully created!");
+            closeSetPinModal();
+            showSection("dashboard-section");
+        } else {
+            console.log(`Failed to save PIN: ${data.error}`);
+        }
+    } catch (error) {
+        console.error("Setup PIN API failed:", error);
+    }
 }
 
 /* ===== TRANSACTION MODULE ====== */
-
 // Shows/hides recipient field depending on transaction type
 function handleTxTypeChange() {
     const txType = document.getElementById('tx-type').value;
@@ -244,6 +342,7 @@ async function confirmTransaction(e) {
             
             closePinModal();
             fetchAndDisplayLogs();
+            fetchAndDisplayNotifications();
             showSection("dashboard-section");
         } else {
             console.log(`Transaction Denied: ${data.error}`);
@@ -330,6 +429,21 @@ async function fetchAndDisplayLogs() {
 
 /* ===== NOTIFICATIONS MODULE ====== */
 
+// POST updates to target endpoint clearing is_read state items on active cluster
+async function markNotificationsAsRead() {
+    if (!loggedInAccount) return;
+
+    try {
+        await fetch(`${API_BASE_URL}/notifications/read`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ account_number: loggedInAccount })
+        });
+    } catch (error) {
+        console.error("Failed to mark notifications as read:", error);
+    }
+}
+
 // Populates notifications element feed dynamically
 async function fetchAndDisplayNotifications() {
     const listContainer = document.getElementById('notifications-list');
@@ -346,6 +460,25 @@ async function fetchAndDisplayNotifications() {
         if (response.ok && Array.isArray(data)) {
             listContainer.innerHTML = ''; 
 
+            // Calculate only unread notifications from the total pool
+            const unreadCount = data.filter(notif => !notif.is_read).length;
+
+            const badge = document.getElementById('notif-badge');
+            const activeSection = document.querySelector('.system-section.active');
+
+            if (badge) {
+                // If the user is currently viewing the notification panel, force the badge to hide/reset
+                if (activeSection && activeSection.id === 'notifications-section') {
+                    badge.innerText = '0';
+                    badge.classList.add('hidden');
+                } else if (unreadCount > 0) {
+                    badge.innerText = unreadCount;
+                    badge.classList.remove('hidden');
+                } else {
+                    badge.classList.add('hidden');
+                }
+            }
+
             if (data.length === 0) {
                 listContainer.innerHTML = '<div class="no-notifications" style="padding: 10px; color: gray;">No notifications available.</div>';
                 return;
@@ -357,10 +490,19 @@ async function fetchAndDisplayNotifications() {
                 item.style.borderBottom = '1px solid #eee';
                 item.style.padding = '12px 6px';
                 
+                // Soft style distinction for unread items vs read items
+                if (!notif.is_read) {
+                    item.style.backgroundColor = '#f8fafc';
+                } else {
+                    item.style.backgroundColor = 'transparent';
+                }
+                
                 const timeStr = new Date(notif.created_at).toLocaleString();
 
                 item.innerHTML = `
-                    <p style="margin: 0 0 4px 0; font-weight: 500;">${notif.message}</p>
+                    <p style="margin: 0 0 4px 0; font-weight: ${notif.is_read ? '500' : '700'};">
+                        ${notif.message} ${!notif.is_read ? '<span style="color: #2563eb; font-size: 10px; margin-left: 5px;">●</span>' : ''}
+                    </p>
                     <small style="color: gray;">${timeStr}</small>
                 `;
                 listContainer.appendChild(item);

@@ -64,7 +64,11 @@
                         <li id="transactions"><button onclick="showSection('transactions-section')">Transactions</button></li>
                         <li id="bill-payment"><button onclick="showSection('bill-payment-section')">Pay Bills</button></li>
                         <li id="transaction-logs"><button onclick="showSection('transaction-logs-section')">Transaction Logs</button></li>
-                        <li id="notification"><button onclick="showSection('notifications-section')">Notifications</button></li>
+                        <li id="notification">
+                            <button onclick="showSection('notifications-section')">
+                                Notifications <span id="notif-badge" class="hidden" style="background: red; color: white; border-radius: 50%; padding: 2px 7px; font-size: 11px; margin-left: 5px; font-weight: bold;"></span>
+                            </button>
+                        </li>
                         <li id="logout-btn"><button onclick="handleLogout()">Logout</button></li>
                     </ul>
                 </nav>
@@ -173,6 +177,46 @@
                 </div>
             </div>
         </div>
+
+        <!-- ACCOUNT PIN SETUP MODAL -->
+        <div id="setup-pin-modal" class="pin-modal">
+            <div class="modal-content secure-setup-card">
+                <div class="modal-header">
+                    <div class="modal-header-icon">🔒</div>
+                    <h2>Secure PIN Setup</h2>
+                    <p>Configure your 4-digit security PIN to initialize authorization protocols.</p>
+                </div>
+                
+                <div class="pin-setup-container">
+                    <!-- Pin Block -->
+                    <div class="pin-entry-block">
+                        <label>Enter New PIN</label>
+                        <div class="pin-digits-row" id="new-pin-row">
+                            <input type="password" maxlength="1" class="pin-box" data-index="0" inputmode="numeric" pattern="[0-9]*">
+                            <input type="password" maxlength="1" class="pin-box" data-index="1" inputmode="numeric" pattern="[0-9]*">
+                            <input type="password" maxlength="1" class="pin-box" data-index="2" inputmode="numeric" pattern="[0-9]*">
+                            <input type="password" maxlength="1" class="pin-box" data-index="3" inputmode="numeric" pattern="[0-9]*">
+                        </div>
+                    </div>
+
+                    <!-- Confirm Block -->
+                    <div class="pin-entry-block">
+                        <label>Confirm PIN</label>
+                        <div class="pin-digits-row" id="confirm-pin-row">
+                            <input type="password" maxlength="1" class="pin-box" data-index="0" inputmode="numeric" pattern="[0-9]*">
+                            <input type="password" maxlength="1" class="pin-box" data-index="1" inputmode="numeric" pattern="[0-9]*">
+                            <input type="password" maxlength="1" class="pin-box" data-index="2" inputmode="numeric" pattern="[0-9]*">
+                            <input type="password" maxlength="1" class="pin-box" data-index="3" inputmode="numeric" pattern="[0-9]*">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="modal-buttons">
+                    <button type="button" class="btn-primary-action" onclick="saveAccountPin()">Activate Account</button>
+                </div>
+            </div>
+        </div>
+
     </div>
 </body>
 </html>

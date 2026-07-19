@@ -84,10 +84,12 @@ func main() {
 	os.MkdirAll("data", os.ModePerm)
 
 	http.HandleFunc("/api/register", handleRegister)
+	http.HandleFunc("/api/setup-pin", handleSetupPin)
 	http.HandleFunc("/api/login", handleLogin)
 	http.HandleFunc("/api/transaction", handleTransaction)
 	http.HandleFunc("/api/transactionLogs", handleTransactionLogs)
 	http.HandleFunc("/api/notifications", handleNotifications)
+	http.HandleFunc("/api/notifications/read", handleMarkNotificationsAsRead)
 
 	fmt.Println("Server starting on http://localhost:8080...")
 	http.ListenAndServe(":8080", nil)
@@ -96,6 +98,7 @@ func main() {
 /* ========= HANDLERS ========== */
 
 // Handles user registration and account creation
+// Handles user registration (Saves user data, but DOES NOT create accounts.json row yet)
 func handleRegister(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
@@ -147,10 +150,89 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	fileData, _ := json.MarshalIndent(usersList, "", "  ")
 	_ = os.WriteFile("data/users.json", fileData, 0644)
 
+	// Generate the account number cleanly but DO NOT save to accounts.json yet!
+	rSource := rand.NewSource(time.Now().UnixNano())
+	rGen := rand.New(rSource)
+	generatedAccNum := fmt.Sprintf("100%07d", rGen.Intn(10000000))
+
+	// Stash the generated ID and temporary values in a global cache or simple payload mapping
+	// We send this to the UI so it can pass it right back to /api/setup-pin
+	fullName := incomingData.FirstName + " " + incomingData.LastName
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	// Pass user_id and default balance metadata back so UI maps it natively
+	responsePayload := map[string]interface{}{
+		"message":        fmt.Sprintf("Registration phase 1 complete. Account %s pending activation.", generatedAccNum),
+		"name":           fullName,
+		"account_number": generatedAccNum,
+		"balance":        0,
+	}
+	json.NewEncoder(w).Encode(responsePayload)
+}
+
+// Handles PIN Setup and pushes the account record to the database for the first time
+func handleSetupPin(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+	if r.Method == "OPTIONS" {
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	type PinPayload struct {
+		AccountNumber string `json:"account_number"`
+		Pin           string `json:"pin"`
+	}
+
+	var payload PinPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Malformed request payload."})
+		return
+	}
+
+	if payload.AccountNumber == "" || len(payload.Pin) != 4 {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "A valid account number and 4-digit PIN are required."})
+		return
+	}
+
+	// Read users list to find the latest user who doesn't have an account entry yet
+	usersBytes, err := os.ReadFile("data/users.json")
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Could not access user directory."})
+		return
+	}
+	var usersList []UserData
+	json.Unmarshal(usersBytes, &usersList)
+
+	if len(usersList) == 0 {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "No matching user found for this account initialization."})
+		return
+	}
+
+	// Find the current active user record (the last one appended)
+	activeUser := usersList[len(usersList)-1]
+
+	// Read current accounts
 	var accountsList []AccountsData
 	accBytes, err := os.ReadFile("data/accounts.json")
 	if err == nil && len(accBytes) > 0 {
 		json.Unmarshal(accBytes, &accountsList)
+	}
+
+	// Ensure account number doesn't accidentally collide
+	for _, acc := range accountsList {
+		if acc.AccountNumber == payload.AccountNumber {
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Account database collision. Try registering again."})
+			return
+		}
 	}
 
 	nextAccountID := 1
@@ -158,28 +240,28 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		nextAccountID = accountsList[len(accountsList)-1].ID + 1
 	}
 
-	rSource := rand.NewSource(time.Now().UnixNano())
-	rGen := rand.New(rSource)
-	generatedAccNum := fmt.Sprintf("100%07d", rGen.Intn(10000000))
-
+	// PUSH DATA TO THE ACCOUNTS TABLE FOR THE FIRST TIME
 	newAccount := AccountsData{
 		ID:            nextAccountID,
-		UserID:        incomingData.ID,
-		AccountNumber: generatedAccNum,
+		UserID:        activeUser.ID,
+		AccountNumber: payload.AccountNumber,
 		Balance:       0,
 		AccountType:   "Checking",
 		Status:        "Active",
+		Pin:           payload.Pin, // Securely assigned
 	}
 	accountsList = append(accountsList, newAccount)
 
-	accFileData, _ := json.MarshalIndent(accountsList, "", "  ")
-	_ = os.WriteFile("data/accounts.json", accFileData, 0644)
+	updatedAccBytes, _ := json.MarshalIndent(accountsList, "", "  ")
+	_ = os.WriteFile("data/accounts.json", updatedAccBytes, 0644)
 
-	fullName := incomingData.FirstName + " " + incomingData.LastName
-	w.Header().Set("Content-Type", "application/json")
+	// Fire off welcome notification entry
+	createNotification(activeUser.ID, fmt.Sprintf("Welcome to SimBank! Account %s successfully activated with security PIN.", payload.AccountNumber))
+
 	w.WriteHeader(http.StatusOK)
-	responseJSON := fmt.Sprintf(`{"message": "Registration saved successfully! Account %s opened.", "name": "%s"}`, generatedAccNum, fullName)
-	w.Write([]byte(responseJSON))
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": "Security PIN configured safely. Account database synchronized successfully!",
+	})
 }
 
 // Verifies credentials and logs the user in
@@ -551,7 +633,7 @@ func handleTransactionLogs(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(masterHistory)
 }
 
-// Drops backward-sorted list arrays of user notifications
+// Drops backward-sorted list arrays of user notifications (both read and unread)
 func handleNotifications(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
@@ -587,6 +669,7 @@ func handleNotifications(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userNotifications := []Notifications{}
+	// Iterating backward to keep newest notifications on top
 	for i := len(allNotifications) - 1; i >= 0; i-- {
 		if allNotifications[i].UserID == userID {
 			userNotifications = append(userNotifications, allNotifications[i])
@@ -595,6 +678,70 @@ func handleNotifications(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(userNotifications)
+}
+
+// Flushes a user's notifications changing is_read from false to true
+func handleMarkNotificationsAsRead(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	if r.Method == "OPTIONS" {
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	type ReadPayload struct {
+		AccountNumber string `json:"account_number"`
+	}
+
+	var payload ReadPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Malformed JSON payload"})
+		return
+	}
+
+	accBytes, _ := os.ReadFile("data/accounts.json")
+	var accountsList []AccountsData
+	json.Unmarshal(accBytes, &accountsList)
+
+	userID := -1
+	for _, acc := range accountsList {
+		if acc.AccountNumber == payload.AccountNumber {
+			userID = acc.UserID
+			break
+		}
+	}
+
+	if userID == -1 {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Account or user data missing"})
+		return
+	}
+
+	var allNotifications []Notifications
+	notifBytes, err := os.ReadFile("data/notifications.json")
+	if err == nil && len(notifBytes) > 0 {
+		json.Unmarshal(notifBytes, &allNotifications)
+	}
+
+	// Toggle all unread notifications belonging to the user to true
+	hasChanges := false
+	for i := 0; i < len(allNotifications); i++ {
+		if allNotifications[i].UserID == userID && !allNotifications[i].IsRead {
+			allNotifications[i].IsRead = true
+			hasChanges = true
+		}
+	}
+
+	// Rewrite data if changes occurred
+	if hasChanges {
+		updatedBytes, _ := json.MarshalIndent(allNotifications, "", "  ")
+		_ = os.WriteFile("data/notifications.json", updatedBytes, 0644)
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"message": "Notifications successfully marked as read!"})
 }
 
 /* ======== HELPER FUNCTIONS ======= */

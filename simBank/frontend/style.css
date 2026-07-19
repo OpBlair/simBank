@@ -175,7 +175,7 @@ form button {
 form button:hover {
     background: #1d4ed8;
 }
-.hidden { display: none; }
+
 /* --- Transaction History Logs --- */
 table {
     width: 100%;
@@ -195,7 +195,15 @@ td {
     border-bottom: 1px solid #e5e7eb;
 }
 
-/* --- Pin Confirmation Modal --- */
+code {
+    background: #f1f5f9;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 13px;
+}
+
+/* --- Pin Confirmation & Setup Modals --- */
 .pin-modal {
     display: none;
     position: fixed;
@@ -233,6 +241,7 @@ td {
     display: flex;
     justify-content: center;
     gap: 10px;
+    width: 100%;
 }
 
 .modal-buttons button {
@@ -252,6 +261,105 @@ td {
 .modal-buttons button:last-of-type {
     background: #e5e7eb;
     color: #475569;
+}
+
+/* --- New Overhauled Secure Pin Setup Card --- */
+.secure-setup-card {
+    background: #ffffff;
+    max-width: 420px;
+    width: 100%;
+    padding: 32px;
+    border-radius: 16px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
+    text-align: center;
+    border: 1px solid #e5e7eb;
+}
+
+.modal-header-icon {
+    font-size: 2.5rem;
+    margin-bottom: 12px;
+    display: inline-block;
+}
+
+.secure-setup-card h2 {
+    font-size: 1.5rem;
+    color: #1a202c;
+    margin-bottom: 8px;
+    font-weight: 700;
+}
+
+.secure-setup-card p {
+    font-size: 0.9rem;
+    color: #64748b;
+    line-height: 1.4;
+    margin-bottom: 24px;
+}
+
+.pin-setup-container {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    margin-bottom: 28px;
+}
+
+.pin-entry-block {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+}
+
+.pin-entry-block label {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #475569;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.pin-digits-row {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+}
+
+/* Segmented block boxes */
+.pin-box {
+    width: 50px;
+    height: 54px;
+    font-size: 1.5rem;
+    text-align: center;
+    border: 2px solid #cbd5e1;
+    border-radius: 10px;
+    background-color: #f8fafc;
+    color: #1e293b;
+    transition: all 0.2s ease-in-out;
+    letter-spacing: normal; /* clear modal default tracking spacing rules */
+    padding: 0;
+}
+
+.pin-box:focus {
+    border-color: #3b82f6;
+    background-color: #ffffff;
+    box-shadow: 0 0 0 4px rgba(59, 131, 246, 0.15);
+    outline: none;
+}
+
+.btn-primary-action {
+    width: 100%;
+    padding: 12px 32px;
+    background-color: #2563eb;
+    color: #ffffff;
+    border: none;
+    border-radius: 8px;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+}
+
+.btn-primary-action:hover {
+    background-color: #1d4ed8;
 }
 
 /* --- Authentication Layout --- */
@@ -304,7 +412,6 @@ td {
     text-decoration: underline;
 }
 
-/* --- Fix Layout on Register Page --- */
 #register-fields {
     display: flex;
     flex-direction: column;
@@ -315,14 +422,6 @@ td {
 /* --- Utilities & Visibility overrides --- */
 .hidden {
     display: none !important;
-}
-
-code {
-    background: #f1f5f9;
-    padding: 2px 6px;
-    border-radius: 4px;
-    font-family: monospace;
-    font-size: 13px;
 }
 
 /* --- Responsive Layout --- */
