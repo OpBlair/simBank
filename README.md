@@ -1,81 +1,119 @@
-# SimBank - High Availability Banking Simulator
+# SimBank
 
-SimBank is a full-stack banking simulator built to explore backend development, distributed systems concepts, and high availability. The project combines a vanilla HTML, CSS, and JavaScript frontend with a Go backend and evolves from a simple JSON-based storage layer to PostgreSQL with replication.
+SimBank is a simple banking application built with Go, HTML, CSS and JavaScript. The project started as a way to learn how a frontend communicates with a backend before moving on to databases and high availability concepts.
 
-The goal of the project is not only to simulate common banking operations but also to understand how modern backend systems communicate with clients, manage data, and maintain availability.
+At the moment the application stores data in JSON files, but the next step is replacing them with PostgreSQL.
 
-## Development Philosophy
+## Features
 
-This project is being built incrementally to better understand the technologies involved. Features are implemented step by step, beginning with a JSON-based persistence layer before progressing to PostgreSQL, replication, and high-availability concepts.
+- User registration
+- User login
+- Deposit money
+- Withdraw money
+- Transfer money between accounts
+- Pay utility bills
+- Transaction history
+- Notifications
 
-## Tech Stack
+## Technologies Used
 
-Frontend: Clean Semantic HTML5, Vanilla JavaScript (use strict runtime protection), and modern CSS3 (Flexbox/Grid elements).
+### Frontend
+- HTML
+- CSS
+- Vanilla JavaScript
 
-Backend: Go (Golang) REST API engine managing native HTTP routing and manual CORS control policies.
+### Backend
+- Go (Golang)
+- Go net/http package
 
-Storage Layer: Local JSON array persistence layer (data/users.json).
+### Storage
+- JSON files
 
-## File Structure
+## Project Structure
+
+```text
+.
+├── backend/
+│   ├── main.go
+│   └── data/
+│       ├── accounts.json
+│       ├── bills.json
+│       ├── notifications.json
+│       ├── transactions.json
+│       └── users.json
+├── frontend/
+│   ├── index.html
+│   ├── style.css
+│   └── script.js
+├── go.mod
+└── README.md
 ```
-plaintext
-├── data/
-│   └── users.json     # Local database array storing registered profiles
-├── index.html         # Single Page Application core frame structure
-├── style.css          # Visual layout definitions & register page theme overrides
-├── script.js          # Client-side API payload handler & state controllers
-├── main.go            # Go server router, CORS controller, and verification loops
-└── README.md          # Technical system documentation file
+
+## Running the Project
+
+Clone the repository.
+
+Go into the backend folder.
+
+```bash
+cd backend
 ```
 
-## How to Initialize and Run the Project
+Run the Go server.
 
-Follow these steps to get your environment initialized and up and running from scratch:
-1. Initialize the Go Module
-
-Open your terminal inside your main project directory and run the following command to initialize your Go environment:
-```
-Bash
-
-go mod init simbank
-```
-2. Set Up the Data Directory
-
-Ensure Git ignores your runtime local user data so it isn't pushed to GitHub. Create a .gitignore file in your root folder and add:
-
-```
-plaintext
-data/
-```
-(The Go server will automatically generate the data/ folder and users.json file if they do not exist when a user registers).
-3. Launch the Backend Server
-
-Start your Go API server by running:
-Bash
-
+```bash
 go run main.go
+```
 
-You should see a message stating: Server starting on http://localhost:8080...
-4. Open the Frontend
+The backend will start on:
 
-Simply open your index.html file in any modern modern web browser, or use a code editor extension like Live Server to launch it.
+```
+http://localhost:8080
+```
 
-## Project Roadmap
+Open the frontend by opening `frontend/index.html` in your browser, or use the Live Server extension in VS Code.
 
-[x] Modern frontend layout prototype
+## API Endpoints
 
-[x] Multi-user registration array framework (Local JSON persistence)
+| Method | Endpoint | Description |
+|---------|----------|-------------|
+| POST | /api/register | Register a new user |
+| POST | /api/login | Login |
+| POST | /api/transaction | Deposit, withdraw, transfer and bill payment |
+| GET | /api/transactionLogs | View transaction history |
+| GET | /api/notifications | View notifications |
 
-[x] Secure multi-account login authentication & input validation
+## Current Data Storage
 
-[ ] Wallet functionalities (Deposit & Withdrawal mechanisms)
+The application currently stores information in JSON files located in:
 
-[ ] Peer-to-peer money transfers
+```
+backend/data/
+```
 
-[ ] Dynamic transaction history logs binding
+These files act as a simple database while learning backend development.
 
-[ ] Utility bill payment module
+- users.json
+- accounts.json
+- transactions.json
+- bills.json
+- notifications.json
 
-[ ] PostgreSQL relational database integration
+## Future Improvements
 
-[ ] High Availability (HA) node cluster simulation
+- [x] Registration
+- [x] Login
+- [x] Deposit
+- [x] Withdrawal
+- [x] Money transfer
+- [x] Bill payment
+- [x] Transaction history
+- [x] Notifications
+- [ ] PostgreSQL integration
+- [ ] Database replication
+- [ ] High availability setup
+- [ ] Docker support
+
+## Author
+
+Built as a learning project to understand Go backend development, REST APIs, and banking system concepts.
