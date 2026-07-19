@@ -175,7 +175,7 @@ form button {
 form button:hover {
     background: #1d4ed8;
 }
-
+.hidden { display: none; }
 /* --- Transaction History Logs --- */
 table {
     width: 100%;

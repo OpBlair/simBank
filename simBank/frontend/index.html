@@ -98,16 +98,21 @@
                     <h2>Bank Transaction</h2>
                     <form>
                         <label>Transaction Type</label>
-                        <select id="tx-type">
+                        <select id="tx-type" onchange="handleTxTypeChange()">
                             <option value="deposit">Deposit</option>
                             <option value="withdraw">Withdraw</option>
                             <option value="transfer">Transfer</option>
                         </select>
 
+                        <div id="recipient-field" class="hidden">
+                            <label for="tx-recipient">Recipient Account Number</label>
+                            <input type="text" id="tx-recipient" placeholder="Enter 10-digit account number" style="width:  100%;">
+                        </div>
+
                         <label>Amount</label>
                         <input type="number" id="tx-amount" placeholder="Enter amount">
 
-                        <button type="button" onclick="openPinModal()">Continue</button>
+                        <button type="button" onclick="prepareTransaction()">Continue</button>
                     </form>
                 </section>
 
@@ -125,7 +130,7 @@
                         <label>Amount</label>
                         <input type="number" id="bill-amount" placeholder="Payment amount">
 
-                        <button type="button" onclick="openPinModal()">Continue</button>
+                        <button type="button" onclick="prepareBillPayment()">Continue</button>
                     </form>
                 </section>
 
@@ -136,7 +141,7 @@
                         <thead>
                             <tr>
                                 <th>Time</th>
-                                <th>Transaction ID</th>
+                                <th>Reference</th>
                                 <th>Type</th>
                                 <th>Amount</th>
                                 <th>Status</th>
@@ -163,8 +168,8 @@
                 <p>Enter your security PIN to continue</p>
                 <input type="password" maxlength="4" placeholder="****">
                 <div class="modal-buttons">
-                    <button onclick="confirmTransaction()">Confirm</button>
-                    <button onclick="cancelTransaction()">Cancel</button>
+                    <button type="button" onclick="confirmTransaction(event)">Confirm</button>
+                    <button type="button" onclick="cancelTransaction(event)">Cancel</button>
                 </div>
             </div>
         </div>
