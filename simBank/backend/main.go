@@ -18,9 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/argon2"
 )
-
 /* ============ DATA STRUCTS =============== */
-
 type UserData struct {
 	ID        int       `json:"id"`
 	FirstName string    `json:"first_name"`
@@ -91,16 +89,9 @@ type IncomingTransaction struct {
 /* === DATABASE CONNECTION POOLS === */
 var dbPrimary *pgxpool.Pool
 
-/* dummy data to prevent compiler from complaining about unused packages */
-var _ = argon2.IDKey
-var _ = context.Background
-
 /* =============== MAIN FUNCTION ================ */
-
 func main() {
 	os.MkdirAll("data", os.ModePerm)
-	// Seed your random generator for unique account numbers
-	//mathRand.Seed(time.Now().UnixNano())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -134,7 +125,7 @@ func main() {
 
 	fmt.Println(" Connected database:", databaseName)
 
-	/* ===== API ROUTES ==== */
+	// Routing Setup
 	http.HandleFunc("/api/register", handleRegister)
 	http.HandleFunc("/api/setup-pin", handleSetupPin)
 	http.HandleFunc("/api/login", handleLogin)
@@ -148,8 +139,6 @@ func main() {
 }
 
 /* ========= HANDLERS ========== */
-
-// Handles user registration - generates account number, returns it, prompts for PIN
 func handleRegister(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
@@ -175,7 +164,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	ctx := context.Background()
 
-	// 1. Check if user already exists
+	// Make sure the email isn't already taken
 	var exists bool
 	err := dbPrimary.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM users WHERE LOWER(email) = LOWER($1))", strings.TrimSpace(incomingData.Email)).Scan(&exists)
 	if err != nil {
@@ -189,7 +178,6 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Hash Password using Argon2 with proper salt
 	hashedPassword, err := hashWithArgon2(incomingData.Password)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -197,7 +185,6 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Save User row into PostgreSQL
 	var newUserID int
 	err = dbPrimary.QueryRow(ctx,
 		"INSERT INTO users (first_name, last_name, email, password, created_at) VALUES ($1, $2, $3, $4, NOW()) RETURNING id",
@@ -210,7 +197,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. Generate account number
+	// Generate a quick random account number
 	rSource := mathrand.NewSource(time.Now().UnixNano())
 	rGen := mathrand.New(rSource)
 	generatedAccNum := fmt.Sprintf("100%07d", rGen.Intn(10000000))
@@ -218,7 +205,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	fullName := incomingData.FirstName + " " + incomingData.LastName
 	w.WriteHeader(http.StatusOK)
 
-	// Send account number back - frontend will pass it to setup-pin
+	// Send account number back - frontend needs this to hit the setup-pin route next
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"message":        fmt.Sprintf("Registration phase 1 complete. Account %s pending activation.", generatedAccNum),
 		"name":           fullName,
@@ -227,7 +214,6 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Handles PIN Setup - creates account in DB with hashed PIN
 func handleSetupPin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
@@ -258,13 +244,13 @@ func handleSetupPin(w http.ResponseWriter, r *http.Request) {
 
 	ctx := context.Background()
 
-	// 1. Get the latest registered user who doesn't have an account yet
+	// Grab the most recently registered user who doesn't have an active account link yet
 	var userID int
 	err := dbPrimary.QueryRow(ctx, `
-		SELECT u.id FROM users u 
-		LEFT JOIN accounts a ON u.id = a.user_id 
-		WHERE a.id IS NULL 
-		ORDER BY u.created_at DESC LIMIT 1`,
+        SELECT u.id FROM users u 
+        LEFT JOIN accounts a ON u.id = a.user_id 
+        WHERE a.id IS NULL 
+        ORDER BY u.created_at DESC LIMIT 1`,
 	).Scan(&userID)
 
 	if err != nil {
@@ -273,7 +259,6 @@ func handleSetupPin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Hash the PIN using Argon2 with proper salt
 	hashedPin, err := hashWithArgon2(payload.Pin)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -281,10 +266,9 @@ func handleSetupPin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Insert account into DB with hashed PIN - NOW account is created
 	_, err = dbPrimary.Exec(ctx, `
-		INSERT INTO accounts (user_id, acc_number, balance, acc_type, status, pin, created_at) 
-		VALUES ($1, $2, 0, 'Checking', 'Active', $3, NOW())`,
+        INSERT INTO accounts (user_id, acc_number, balance, acc_type, status, pin, created_at) 
+        VALUES ($1, $2, 0, 'Checking', 'Active', $3, NOW())`,
 		userID, payload.AccNumber, hashedPin,
 	)
 
@@ -302,7 +286,6 @@ func handleSetupPin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Verifies credentials and logs the user in - uses DB with password verification
 func handleLogin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
@@ -323,7 +306,6 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	ctx := context.Background()
 
-	// 1. Query user by email
 	var userID int
 	var firstName, lastName, hashedPassword string
 	err := dbPrimary.QueryRow(ctx,
@@ -337,7 +319,6 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Verify password against hashed version using Argon2
 	passwordMatch, err := verifyArgon2Match(loginAttempt.Password, hashedPassword)
 	if err != nil || !passwordMatch {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -345,7 +326,6 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Get user's account data from DB
 	var accNumber string
 	var balance int64
 	err = dbPrimary.QueryRow(ctx,
@@ -354,7 +334,6 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	).Scan(&accNumber, &balance)
 
 	if err != nil {
-		// User has no account yet (registered but didn't setup PIN)
 		accNumber = "N/A"
 		balance = 0
 	}
@@ -370,7 +349,6 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Processes financial movements - using strict database transactions
 func handleTransaction(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
@@ -387,7 +365,6 @@ func handleTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Basic validation
 	if txReq.AccNumber == "" || txReq.Amount <= 0 || txReq.Pin == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid payload. Account, positive amount, and PIN are required."})
@@ -396,17 +373,17 @@ func handleTransaction(w http.ResponseWriter, r *http.Request) {
 
 	ctx := context.Background()
 
-	// 1. Begin Database Transaction
+	// Start SQL transaction block
 	tx, err := dbPrimary.Begin(ctx)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to initialize secure transaction block."})
 		return
 	}
-	// Defer a rollback; it does nothing if the tx is already committed
+	// Important: automatic safety net. Does nothing if we call tx.Commit() earlier.
 	defer tx.Rollback(ctx)
 
-	// 2. Fetch and lock the primary source account row to prevent race conditions (FOR UPDATE)
+	// FOR UPDATE locks this row so two concurrent requests can't modify the same balance at once
 	var accountID, userID int
 	var currentBalance int64
 	var dbHashedPin string
@@ -421,7 +398,6 @@ func handleTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Verify the transaction security PIN
 	pinMatch, err := verifyArgon2Match(txReq.Pin, dbHashedPin)
 	if err != nil || !pinMatch {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -429,12 +405,10 @@ func handleTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate unique tracking reference string
 	rSource := mathrand.NewSource(time.Now().UnixNano())
 	rGen := mathrand.New(rSource)
 	txReference := fmt.Sprintf("TXN-%d%d", time.Now().Unix(), rGen.Intn(90000)+10000)
 
-	// 4. Process individual financial categories
 	switch txReq.Category {
 	case "deposit":
 		newBalance := currentBalance + txReq.Amount
@@ -445,10 +419,9 @@ func handleTransaction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Log into transactions table
 		_, err = tx.Exec(ctx, `
-			INSERT INTO transactions (account_id, transaction_type, amount, sender, recipient, status, reference, created_at)
-			VALUES ($1, 'Deposit', $2, 'External/Cash', $3, 'Completed', $4, NOW())`,
+            INSERT INTO transactions (account_id, transaction_type, amount, sender, recipient, status, reference, created_at)
+            VALUES ($1, 'Deposit', $2, 'External/Cash', $3, 'Completed', $4, NOW())`,
 			accountID, txReq.Amount, txReq.AccNumber, txReference)
 
 	case "withdraw":
@@ -467,8 +440,8 @@ func handleTransaction(w http.ResponseWriter, r *http.Request) {
 		}
 
 		_, err = tx.Exec(ctx, `
-			INSERT INTO transactions (account_id, transaction_type, amount, sender, recipient, status, reference, created_at)
-			VALUES ($1, 'Withdrawal', $2, $3, 'ATM/Branch', 'Completed', $4, NOW())`,
+            INSERT INTO transactions (account_id, transaction_type, amount, sender, recipient, status, reference, created_at)
+            VALUES ($1, 'Withdrawal', $2, $3, 'ATM/Branch', 'Completed', $4, NOW())`,
 			accountID, txReq.Amount, txReq.AccNumber, txReference)
 
 	case "transfer":
@@ -483,7 +456,7 @@ func handleTransaction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Fetch and lock recipient account row
+		// Lock the recipient's row too before changing balances
 		var destAccountID, destUserID int
 		var destBalance int64
 		err = tx.QueryRow(ctx, "SELECT id, user_id, balance FROM accounts WHERE acc_number = $1 FOR UPDATE", txReq.Recipient).Scan(&destAccountID, &destUserID, &destBalance)
@@ -493,7 +466,6 @@ func handleTransaction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Debit sender, Credit receiver
 		_, err = tx.Exec(ctx, "UPDATE accounts SET balance = $1 WHERE id = $2", currentBalance-txReq.Amount, accountID)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -507,13 +479,11 @@ func handleTransaction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Log transfer record
 		_, err = tx.Exec(ctx, `
-			INSERT INTO transactions (account_id, transaction_type, amount, sender, recipient, status, reference, created_at)
-			VALUES ($1, 'Transfer', $2, $3, $4, 'Completed', $5, NOW())`,
+            INSERT INTO transactions (account_id, transaction_type, amount, sender, recipient, status, reference, created_at)
+            VALUES ($1, 'Transfer', $2, $3, $4, 'Completed', $5, NOW())`,
 			accountID, txReq.Amount, txReq.AccNumber, txReq.Recipient, txReference)
 
-		// Create a dynamic notification for recipient asynchronously later or register during tx
 		_, _ = tx.Exec(ctx, "INSERT INTO notifications (user_id, message, is_read, created_at) VALUES ($1, $2, FALSE, NOW())",
 			destUserID, fmt.Sprintf("You received a transfer of %d from account %s. Ref: %s", txReq.Amount, txReq.AccNumber, txReference))
 
@@ -524,7 +494,6 @@ func handleTransaction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Look up provider by name (no PIN needed)
 		var providerID int
 		var providerAccNum string
 		err = tx.QueryRow(ctx,
@@ -543,7 +512,6 @@ func handleTransaction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Debit account
 		_, err = tx.Exec(ctx, "UPDATE accounts SET balance = $1 WHERE id = $2", currentBalance-txReq.Amount, accountID)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -551,16 +519,14 @@ func handleTransaction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Record in bills table (references provider)
 		_, err = tx.Exec(ctx, `
-			INSERT INTO bills (account_id, provider_id, amount, status, created_at)
-			VALUES ($1, $2, $3, 'Paid', NOW())`,
+            INSERT INTO bills (account_id, provider_id, amount, status, created_at)
+            VALUES ($1, $2, $3, 'Paid', NOW())`,
 			accountID, providerID, txReq.Amount)
 
-		// Also log in transactions
 		_, err = tx.Exec(ctx, `
-			INSERT INTO transactions (account_id, transaction_type, amount, sender, recipient, status, reference, created_at)
-			VALUES ($1, 'Bill Payment', $2, $3, $4, 'Completed', $5, NOW())`,
+            INSERT INTO transactions (account_id, transaction_type, amount, sender, recipient, status, reference, created_at)
+            VALUES ($1, 'Bill Payment', $2, $3, $4, 'Completed', $5, NOW())`,
 			accountID, txReq.Amount, txReq.AccNumber, txReq.Provider, txReference)
 	default:
 		w.WriteHeader(http.StatusBadRequest)
@@ -568,28 +534,25 @@ func handleTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Double-check pipeline runtime error before final commit
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Database error finishing transaction processing."})
 		return
 	}
 
-	// 5. Append system notification to active user context
 	_, err = tx.Exec(ctx, `
-		INSERT INTO notifications (user_id, message, is_read, created_at) 
-		VALUES ($1, $2, FALSE, NOW())`,
+        INSERT INTO notifications (user_id, message, is_read, created_at) 
+        VALUES ($1, $2, FALSE, NOW())`,
 		userID, fmt.Sprintf("Transaction '%s' of %d completed successfully. Ref: %s", txReq.Category, txReq.Amount, txReference),
 	)
 
-	// 6. Commit transaction cleanly to disk
+	// Save everything to disk for real
 	if err := tx.Commit(ctx); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to safely finalize database state changes."})
 		return
 	}
 
-	// Fetch updated final balance to return to interface
 	var updatedBalance int64
 	_ = dbPrimary.QueryRow(ctx, "SELECT balance FROM accounts WHERE id = $1", accountID).Scan(&updatedBalance)
 
@@ -601,7 +564,6 @@ func handleTransaction(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Transaction logs handler
 func handleTransactionLogs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
@@ -611,11 +573,44 @@ func handleTransactionLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 
+	accNumber := r.URL.Query().Get("account_number")
+	if accNumber == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Account number query parameter required."})
+		return
+	}
+
+	ctx := context.Background()
+
+	query := `
+        SELECT t.created_at, t.reference, t.transaction_type, t.amount, t.status 
+        FROM transactions t
+        JOIN accounts a ON t.account_id = a.id
+        WHERE a.acc_number = $1
+        ORDER BY t.created_at DESC`
+
+	rows, err := dbPrimary.Query(ctx, query, accNumber)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to query logs database."})
+		return
+	}
+	defer rows.Close()
+
+	logs := make([]UnifiedLog, 0)
+	for rows.Next() {
+		var l UnifiedLog
+		err := rows.Scan(&l.CreatedTime, &l.Reference, &l.Type, &l.Amount, &l.Status)
+		if err != nil {
+			continue
+		}
+		logs = append(logs, l)
+	}
+
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode([]UnifiedLog{})
+	json.NewEncoder(w).Encode(logs)
 }
 
-// Notifications handler
 func handleNotifications(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
@@ -625,11 +620,43 @@ func handleNotifications(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 
+	accNumber := r.URL.Query().Get("account_number")
+	if accNumber == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Account number required."})
+		return
+	}
+
+	ctx := context.Background()
+	query := `
+        SELECT n.id, n.user_id, n.message, n.is_read, n.created_at 
+        FROM notifications n
+        JOIN accounts a ON n.user_id = a.user_id
+        WHERE a.acc_number = $1
+        ORDER BY n.created_at DESC`
+
+	rows, err := dbPrimary.Query(ctx, query, accNumber)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to query notifications database."})
+		return
+	}
+	defer rows.Close()
+
+	notifications := make([]Notifications, 0)
+	for rows.Next() {
+		var n Notifications
+		err := rows.Scan(&n.ID, &n.UserID, &n.Message, &n.IsRead, &n.CreatedAt)
+		if err != nil {
+			continue
+		}
+		notifications = append(notifications, n)
+	}
+
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode([]Notifications{})
+	json.NewEncoder(w).Encode(notifications)
 }
 
-// Mark notifications as read handler
 func handleMarkNotificationsAsRead(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
@@ -639,15 +666,36 @@ func handleMarkNotificationsAsRead(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 
+	type ReadPayload struct {
+		AccountNumber string `json:"account_number"`
+	}
+
+	var payload ReadPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || payload.AccountNumber == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid payload parameters."})
+		return
+	}
+
+	ctx := context.Background()
+	query := `
+        UPDATE notifications 
+        SET is_read = TRUE 
+        WHERE user_id = (SELECT user_id FROM accounts WHERE acc_number = $1 LIMIT 1)`
+
+	_, err := dbPrimary.Exec(ctx, query, payload.AccountNumber)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to update database records."})
+		return
+	}
+
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"message": "Notifications marked as read"})
 }
 
 /* ======== HELPER FUNCTIONS ======= */
-
-// Hash password with Argon2id using cryptographically secure random salt
 func hashWithArgon2(plainText string) (string, error) {
-	// Generate 16-byte cryptographically secure random salt
 	salt := make([]byte, 16)
 	if _, err := rand.Read(salt); err != nil {
 		return "", err
@@ -660,18 +708,16 @@ func hashWithArgon2(plainText string) (string, error) {
 
 	hashedBytes := argon2.IDKey([]byte(plainText), salt, timeParams, memory, threads, keyLength)
 
-	// Encode salt and hash to base64
 	b64Salt := base64.RawStdEncoding.EncodeToString(salt)
 	b64Hash := base64.RawStdEncoding.EncodeToString(hashedBytes)
 
-	// Standard format with embedded parameters
+	// Combine everything into a standard format string to save in the DB string field
 	encodedHash := fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
 		argon2.Version, memory, timeParams, threads, b64Salt, b64Hash)
 
 	return encodedHash, nil
 }
 
-// Verify password against Argon2 hash with constant-time comparison
 func verifyArgon2Match(plainText, encodedHash string) (bool, error) {
 	parts := strings.Split(encodedHash, "$")
 	if len(parts) != 6 {
@@ -699,7 +745,7 @@ func verifyArgon2Match(plainText, encodedHash string) (bool, error) {
 	keyLength := uint32(len(existingHash))
 	computedHash := argon2.IDKey([]byte(plainText), salt, timeParams, memory, threads, keyLength)
 
-	// Constant-time comparison to prevent timing attacks
+	// ConstantTimeCompare prevents timing attacks where hackers measure CPU response times
 	if subtle.ConstantTimeCompare(existingHash, computedHash) == 1 {
 		return true, nil
 	}
@@ -707,13 +753,12 @@ func verifyArgon2Match(plainText, encodedHash string) (bool, error) {
 	return false, nil
 }
 
-// Creates notification record in DB
 func createNotification(userID int, message string) {
 	ctx := context.Background()
 
 	_, err := dbPrimary.Exec(ctx, `
-		INSERT INTO notifications (user_id, message, is_read, created_at) 
-		VALUES ($1, $2, FALSE, NOW())`,
+        INSERT INTO notifications (user_id, message, is_read, created_at) 
+        VALUES ($1, $2, FALSE, NOW())`,
 		userID, message,
 	)
 
