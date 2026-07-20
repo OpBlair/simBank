@@ -370,7 +370,7 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Processes financial movements - kept as is for now
+// Processes financial movements - using strict database transactions
 func handleTransaction(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
@@ -380,8 +380,225 @@ func handleTransaction(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 
+	var txReq IncomingTransaction
+	if err := json.NewDecoder(r.Body).Decode(&txReq); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Malformed JSON request payload."})
+		return
+	}
+
+	// Basic validation
+	if txReq.AccNumber == "" || txReq.Amount <= 0 || txReq.Pin == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid payload. Account, positive amount, and PIN are required."})
+		return
+	}
+
+	ctx := context.Background()
+
+	// 1. Begin Database Transaction
+	tx, err := dbPrimary.Begin(ctx)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to initialize secure transaction block."})
+		return
+	}
+	// Defer a rollback; it does nothing if the tx is already committed
+	defer tx.Rollback(ctx)
+
+	// 2. Fetch and lock the primary source account row to prevent race conditions (FOR UPDATE)
+	var accountID, userID int
+	var currentBalance int64
+	var dbHashedPin string
+	err = tx.QueryRow(ctx,
+		"SELECT id, user_id, balance, pin FROM accounts WHERE acc_number = $1 FOR UPDATE",
+		txReq.AccNumber,
+	).Scan(&accountID, &userID, &currentBalance, &dbHashedPin)
+
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Source account not found."})
+		return
+	}
+
+	// 3. Verify the transaction security PIN
+	pinMatch, err := verifyArgon2Match(txReq.Pin, dbHashedPin)
+	if err != nil || !pinMatch {
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Security validation failed: Invalid PIN."})
+		return
+	}
+
+	// Generate unique tracking reference string
+	rSource := mathrand.NewSource(time.Now().UnixNano())
+	rGen := mathrand.New(rSource)
+	txReference := fmt.Sprintf("TXN-%d%d", time.Now().Unix(), rGen.Intn(90000)+10000)
+
+	// 4. Process individual financial categories
+	switch txReq.Category {
+	case "deposit":
+		newBalance := currentBalance + txReq.Amount
+		_, err = tx.Exec(ctx, "UPDATE accounts SET balance = $1 WHERE id = $2", newBalance, accountID)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Failed to credit account balance."})
+			return
+		}
+
+		// Log into transactions table
+		_, err = tx.Exec(ctx, `
+			INSERT INTO transactions (account_id, transaction_type, amount, sender, recipient, status, reference, created_at)
+			VALUES ($1, 'Deposit', $2, 'External/Cash', $3, 'Completed', $4, NOW())`,
+			accountID, txReq.Amount, txReq.AccNumber, txReference)
+
+	case "withdraw":
+		if currentBalance < txReq.Amount {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Transaction rejected: Insufficient funds."})
+			return
+		}
+
+		newBalance := currentBalance - txReq.Amount
+		_, err = tx.Exec(ctx, "UPDATE accounts SET balance = $1 WHERE id = $2", newBalance, accountID)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Failed to debit account balance."})
+			return
+		}
+
+		_, err = tx.Exec(ctx, `
+			INSERT INTO transactions (account_id, transaction_type, amount, sender, recipient, status, reference, created_at)
+			VALUES ($1, 'Withdrawal', $2, $3, 'ATM/Branch', 'Completed', $4, NOW())`,
+			accountID, txReq.Amount, txReq.AccNumber, txReference)
+
+	case "transfer":
+		if txReq.Recipient == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Recipient account number required for transfers."})
+			return
+		}
+		if currentBalance < txReq.Amount {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Transaction rejected: Insufficient funds."})
+			return
+		}
+
+		// Fetch and lock recipient account row
+		var destAccountID, destUserID int
+		var destBalance int64
+		err = tx.QueryRow(ctx, "SELECT id, user_id, balance FROM accounts WHERE acc_number = $1 FOR UPDATE", txReq.Recipient).Scan(&destAccountID, &destUserID, &destBalance)
+		if err != nil {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Recipient account not found."})
+			return
+		}
+
+		// Debit sender, Credit receiver
+		_, err = tx.Exec(ctx, "UPDATE accounts SET balance = $1 WHERE id = $2", currentBalance-txReq.Amount, accountID)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Failed processing sender balance update."})
+			return
+		}
+		_, err = tx.Exec(ctx, "UPDATE accounts SET balance = $1 WHERE id = $2", destBalance+txReq.Amount, destAccountID)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Failed processing recipient balance update."})
+			return
+		}
+
+		// Log transfer record
+		_, err = tx.Exec(ctx, `
+			INSERT INTO transactions (account_id, transaction_type, amount, sender, recipient, status, reference, created_at)
+			VALUES ($1, 'Transfer', $2, $3, $4, 'Completed', $5, NOW())`,
+			accountID, txReq.Amount, txReq.AccNumber, txReq.Recipient, txReference)
+
+		// Create a dynamic notification for recipient asynchronously later or register during tx
+		_, _ = tx.Exec(ctx, "INSERT INTO notifications (user_id, message, is_read, created_at) VALUES ($1, $2, FALSE, NOW())",
+			destUserID, fmt.Sprintf("You received a transfer of %d from account %s. Ref: %s", txReq.Amount, txReq.AccNumber, txReference))
+
+	case "pay_bill":
+		if txReq.Provider == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Bill payment provider is required."})
+			return
+		}
+
+		// Look up provider by name (no PIN needed)
+		var providerID int
+		var providerAccNum string
+		err = tx.QueryRow(ctx,
+			"SELECT id, account_number FROM providers WHERE name = $1 AND is_active = TRUE",
+			txReq.Provider).Scan(&providerID, &providerAccNum)
+
+		if err != nil {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Provider not found or inactive."})
+			return
+		}
+
+		if currentBalance < txReq.Amount {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Insufficient funds for bill payment."})
+			return
+		}
+
+		// Debit account
+		_, err = tx.Exec(ctx, "UPDATE accounts SET balance = $1 WHERE id = $2", currentBalance-txReq.Amount, accountID)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Failed processing bill payment debit."})
+			return
+		}
+
+		// Record in bills table (references provider)
+		_, err = tx.Exec(ctx, `
+			INSERT INTO bills (account_id, provider_id, amount, status, created_at)
+			VALUES ($1, $2, $3, 'Paid', NOW())`,
+			accountID, providerID, txReq.Amount)
+
+		// Also log in transactions
+		_, err = tx.Exec(ctx, `
+			INSERT INTO transactions (account_id, transaction_type, amount, sender, recipient, status, reference, created_at)
+			VALUES ($1, 'Bill Payment', $2, $3, $4, 'Completed', $5, NOW())`,
+			accountID, txReq.Amount, txReq.AccNumber, txReq.Provider, txReference)
+	default:
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Unsupported transaction category requested."})
+		return
+	}
+
+	// Double-check pipeline runtime error before final commit
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Database error finishing transaction processing."})
+		return
+	}
+
+	// 5. Append system notification to active user context
+	_, err = tx.Exec(ctx, `
+		INSERT INTO notifications (user_id, message, is_read, created_at) 
+		VALUES ($1, $2, FALSE, NOW())`,
+		userID, fmt.Sprintf("Transaction '%s' of %d completed successfully. Ref: %s", txReq.Category, txReq.Amount, txReference),
+	)
+
+	// 6. Commit transaction cleanly to disk
+	if err := tx.Commit(ctx); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to safely finalize database state changes."})
+		return
+	}
+
+	// Fetch updated final balance to return to interface
+	var updatedBalance int64
+	_ = dbPrimary.QueryRow(ctx, "SELECT balance FROM accounts WHERE id = $1", accountID).Scan(&updatedBalance)
+
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"message": "Transaction handler - to be updated"})
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message":   "Financial transaction processed successfully.",
+		"reference": txReference,
+		"balance":   updatedBalance,
+	})
 }
 
 // Transaction logs handler

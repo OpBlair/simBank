@@ -280,12 +280,11 @@ function prepareTransaction(){
     }
 
     pendingTransaction = {
-        category: 'bank_tx',
-        type: transactionType,
+        category: transactionType, // Directly maps to 'deposit', 'withdraw', or 'transfer'
         amount: amount,
         account_number: accountNumber,
         recipient: transactionType === 'transfer' ? recipient : ""
-    }
+    };
 
     openPinModal();
 }
@@ -320,7 +319,7 @@ async function confirmTransaction(e) {
 
         if(response.ok){
             console.log(`Success ${data.message}`);
-            document.getElementById('user-display-balance').innerText = `$${Number(data.new_balance).toFixed(2)}`;
+            document.getElementById('user-display-balance').innerText = `$${Number(data.balance).toFixed(2)}`;
             
             // Clean UI input elements explicitly 
             const txAmountInput = document.getElementById('tx-amount');
@@ -364,15 +363,14 @@ function prepareBillPayment() {
     }
 
     pendingTransaction = {
-        category: 'bill_pay',
-        type: 'withdraw', 
+        category: 'pay_bill',
         amount: amount,
         account_number: accountNumber,
         provider: provider,
         recipient: ""
     };
 
-    openPinModal(); // Reuses same PIN workflow
+    openPinModal(); 
 }
 
 /* ===== TRANSACTION LOGS MODULE ====== */

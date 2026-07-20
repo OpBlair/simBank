@@ -1,49 +1,65 @@
 CREATE DATABASE simbank;
+
 CREATE TABLE users (
-    id SERIAL PRIMARY KEY,                    -- Go: UserData.ID
-    first_name VARCHAR(255) NOT NULL,          -- Go: UserData.FirstName
-    last_name VARCHAR(255) NOT NULL,           -- Go: UserData.LastName
-    email VARCHAR(255) NOT NULL UNIQUE,        -- Go: UserData.Email
-    password VARCHAR(255) NOT NULL,            -- Go: UserData.Password
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP            -- Go: UserData.CreatedAt
+    id SERIAL PRIMARY KEY,
+    first_name VARCHAR(255) NOT NULL,
+    last_name VARCHAR(255) NOT NULL,
+    email VARCHAR(255) NOT NULL UNIQUE,
+    password VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE accounts (
-    id SERIAL PRIMARY KEY,                    -- Go: AccountsData.ID
-    user_id INT NOT NULL REFERENCES users(id), -- Go: AccountsData.UserID
-    acc_number VARCHAR(20) UNIQUE NOT NULL,    -- Go: AccountsData.AccountNumber
-    balance BIGINT NOT NULL DEFAULT 0,            -- Go: AccountsData.Balance
-    acc_type VARCHAR(50) NOT NULL DEFAULT 'Checking',             -- Go: AccountsData.AccountType
-    status VARCHAR(50) NOT NULL DEFAULT 'Active',               -- Go: AccountsData.Status
-    pin VARCHAR(255) NOT NULL,                      -- Go: AccountsData.Pin
+    id SERIAL PRIMARY KEY,
+    user_id INT NOT NULL REFERENCES users(id),
+    acc_number VARCHAR(20) UNIQUE NOT NULL,
+    balance BIGINT NOT NULL DEFAULT 0,
+    acc_type VARCHAR(50) NOT NULL DEFAULT 'Checking',
+    status VARCHAR(50) NOT NULL DEFAULT 'Active',
+    pin VARCHAR(255) NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE transactions (
-    id SERIAL PRIMARY KEY,                    -- Go: Transactions.ID
-    account_id INT NOT NULL REFERENCES accounts(id), -- Go: Transactions.AccountID
-    transaction_type VARCHAR(50) NOT NULL,     -- Go: Transactions.TransactionType
-    amount BIGINT NOT NULL,                       -- Go: Transactions.Amount
-    sender VARCHAR(50) NULL,                   -- Go: Transactions.Sender
-    recipient VARCHAR(50) NULL,                -- Go: Transactions.Recipient
-    status VARCHAR(50) NOT NULL,               -- Go: Transactions.Status
-    reference VARCHAR(100) UNIQUE NOT NULL,    -- Go: Transactions.Reference
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP              -- Go: Transactions.CreatedAt
+    id SERIAL PRIMARY KEY,
+    account_id INT NOT NULL REFERENCES accounts(id),
+    transaction_type VARCHAR(50) NOT NULL,
+    amount BIGINT NOT NULL,
+    sender VARCHAR(50) NULL,
+    recipient VARCHAR(50) NULL,
+    status VARCHAR(50) NOT NULL,
+    reference VARCHAR(100) UNIQUE NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE providers (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL UNIQUE,
+    account_number VARCHAR(100) NOT NULL,
+    account_holder VARCHAR(255),
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Insert default providers with legit 10-digit account numbers
+INSERT INTO providers (name, account_number, account_holder, is_active) VALUES
+('Electricity', '1000567890', 'National Power Company Ltd', TRUE),
+('Water', '1001234567', 'Water Authority Services', TRUE),
+('Internet', '1002789456', 'Broadband Communications Inc', TRUE);
+
 CREATE TABLE bills (
-    id SERIAL PRIMARY KEY,                    -- Go: Bills.ID
-    account_id INT NOT NULL REFERENCES accounts(id), -- Go: Bills.AccountID
-    provider VARCHAR(255) NOT NULL,            -- Go: Bills.Provider
-    amount BIGINT NOT NULL,                       -- Go: Bills.Amount
-    status VARCHAR(50) NOT NULL,               -- Go: Bills.Status
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP             -- Go: Bills.CreatedAt
+    id SERIAL PRIMARY KEY,
+    account_id INT NOT NULL REFERENCES accounts(id),
+    provider_id INT NOT NULL REFERENCES providers(id),
+    amount BIGINT NOT NULL,
+    status VARCHAR(50) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE notifications (
-    id SERIAL PRIMARY KEY,                    -- Go: Notifications.ID
-    user_id INT NOT NULL REFERENCES users(id), -- Go: Notifications.UserID
-    message TEXT NOT NULL,                     -- Go: Notifications.Message
-    is_read BOOLEAN NOT NULL DEFAULT FALSE,    -- Go: Notifications.IsRead
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP              -- Go: Notifications.CreatedAt
+    id SERIAL PRIMARY KEY,
+    user_id INT NOT NULL REFERENCES users(id),
+    message TEXT NOT NULL,
+    is_read BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
