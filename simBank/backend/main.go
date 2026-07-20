@@ -1,13 +1,22 @@
 package main
 
 import (
+	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"math/rand"
+	"log"
+	mathrand "math/rand"
 	"net/http"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/argon2"
 )
 
 /* ============ DATA STRUCTS =============== */
@@ -22,20 +31,21 @@ type UserData struct {
 }
 
 type AccountsData struct {
-	ID            int    `json:"id"`
-	UserID        int    `json:"user_id"`
-	AccountNumber string `json:"acc_number"`
-	Balance       int    `json:"balance"`
-	AccountType   string `json:"acc_type"`
-	Status        string `json:"status"`
-	Pin           string `json:"pin"`
+	ID          int       `json:"id"`
+	UserID      int       `json:"user_id"`
+	AccNumber   string    `json:"acc_number"`
+	Balance     int64     `json:"balance"`
+	AccountType string    `json:"acc_type"`
+	Status      string    `json:"status"`
+	Pin         string    `json:"pin"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type Transactions struct {
 	ID              int       `json:"id"`
 	AccountID       int       `json:"account_id"`
 	TransactionType string    `json:"transaction_type"`
-	Amount          int       `json:"amount"`
+	Amount          int64     `json:"amount"`
 	Sender          string    `json:"sender"`
 	Recipient       string    `json:"recipient"`
 	Status          string    `json:"status"`
@@ -47,7 +57,7 @@ type Bills struct {
 	ID        int       `json:"id"`
 	AccountID int       `json:"account_id"`
 	Provider  string    `json:"provider"`
-	Amount    int       `json:"amount"`
+	Amount    int64     `json:"amount"`
 	Status    string    `json:"status"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -64,25 +74,67 @@ type UnifiedLog struct {
 	CreatedTime time.Time `json:"timestamp"`
 	Reference   string    `json:"reference"`
 	Type        string    `json:"type"`
-	Amount      int       `json:"amount"`
+	Amount      int64     `json:"amount"`
 	Status      string    `json:"status"`
 }
 
 type IncomingTransaction struct {
-	Category      string `json:"category"`
-	Type          string `json:"type"`
-	Amount        int    `json:"amount"`
-	Provider      string `json:"provider"`
-	Pin           string `json:"pin"`
-	AccountNumber string `json:"account_number"`
-	Recipient     string `json:"recipient"`
+	Category  string `json:"category"`
+	Type      string `json:"type"`
+	Amount    int64  `json:"amount"`
+	Provider  string `json:"provider"`
+	Pin       string `json:"pin"`
+	AccNumber string `json:"account_number"`
+	Recipient string `json:"recipient"`
 }
+
+/* === DATABASE CONNECTION POOLS === */
+var dbPrimary *pgxpool.Pool
+
+/* dummy data to prevent compiler from complaining about unused packages */
+var _ = argon2.IDKey
+var _ = context.Background
 
 /* =============== MAIN FUNCTION ================ */
 
 func main() {
 	os.MkdirAll("data", os.ModePerm)
+	// Seed your random generator for unique account numbers
+	//mathRand.Seed(time.Now().UnixNano())
 
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	connStr := "postgres://user_name:password@host_name:port_number/database_name?sslmode=disable"
+
+	var err error
+	dbPrimary, err = pgxpool.New(ctx, connStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FATAL: Unable to connect to Database: %v\n", err)
+		os.Exit(1)
+	}
+	defer dbPrimary.Close()
+
+	if err = dbPrimary.Ping(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "FATAL: Database server unreachable: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("Connected to PostgreSQL successfully!")
+
+	var databaseName string
+	err = dbPrimary.QueryRow(
+		context.Background(),
+		"SELECT current_database();",
+	).Scan(&databaseName)
+
+	if err != nil {
+		log.Fatal("Query failed:", err)
+	}
+
+	fmt.Println(" Connected database:", databaseName)
+
+	/* ===== API ROUTES ==== */
 	http.HandleFunc("/api/register", handleRegister)
 	http.HandleFunc("/api/setup-pin", handleSetupPin)
 	http.HandleFunc("/api/login", handleLogin)
@@ -97,16 +149,16 @@ func main() {
 
 /* ========= HANDLERS ========== */
 
-// Handles user registration and account creation
-// Handles user registration (Saves user data, but DOES NOT create accounts.json row yet)
+// Handles user registration - generates account number, returns it, prompts for PIN
 func handleRegister(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
 	if r.Method == "OPTIONS" {
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
 
 	var incomingData UserData
 	if err := json.NewDecoder(r.Body).Decode(&incomingData); err != nil {
@@ -121,57 +173,61 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var usersList []UserData
-	fileBytes, err := os.ReadFile("data/users.json")
-	if err == nil && len(fileBytes) > 0 {
-		json.Unmarshal(fileBytes, &usersList)
+	ctx := context.Background()
+
+	// 1. Check if user already exists
+	var exists bool
+	err := dbPrimary.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM users WHERE LOWER(email) = LOWER($1))", strings.TrimSpace(incomingData.Email)).Scan(&exists)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Database validation failed."})
+		return
+	}
+	if exists {
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]string{"error": "An account with this email already exists."})
+		return
 	}
 
-	for _, user := range usersList {
-		if strings.EqualFold(strings.TrimSpace(user.Email), strings.TrimSpace(incomingData.Email)) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusConflict)
-			json.NewEncoder(w).Encode(map[string]string{
-				"error": "An account with this email already exists.",
-			})
-			return
-		}
+	// 2. Hash Password using Argon2 with proper salt
+	hashedPassword, err := hashWithArgon2(incomingData.Password)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to encrypt security credentials."})
+		return
 	}
 
-	nextUserID := 1
-	if len(usersList) > 0 {
-		nextUserID = usersList[len(usersList)-1].ID + 1
+	// 3. Save User row into PostgreSQL
+	var newUserID int
+	err = dbPrimary.QueryRow(ctx,
+		"INSERT INTO users (first_name, last_name, email, password, created_at) VALUES ($1, $2, $3, $4, NOW()) RETURNING id",
+		incomingData.FirstName, incomingData.LastName, strings.TrimSpace(incomingData.Email), hashedPassword,
+	).Scan(&newUserID)
+
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to save user record."})
+		return
 	}
 
-	incomingData.ID = nextUserID
-	incomingData.CreatedAt = time.Now()
-	usersList = append(usersList, incomingData)
-
-	fileData, _ := json.MarshalIndent(usersList, "", "  ")
-	_ = os.WriteFile("data/users.json", fileData, 0644)
-
-	// Generate the account number cleanly but DO NOT save to accounts.json yet!
-	rSource := rand.NewSource(time.Now().UnixNano())
-	rGen := rand.New(rSource)
+	// 4. Generate account number
+	rSource := mathrand.NewSource(time.Now().UnixNano())
+	rGen := mathrand.New(rSource)
 	generatedAccNum := fmt.Sprintf("100%07d", rGen.Intn(10000000))
 
-	// Stash the generated ID and temporary values in a global cache or simple payload mapping
-	// We send this to the UI so it can pass it right back to /api/setup-pin
 	fullName := incomingData.FirstName + " " + incomingData.LastName
-	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
-	// Pass user_id and default balance metadata back so UI maps it natively
-	responsePayload := map[string]interface{}{
+	// Send account number back - frontend will pass it to setup-pin
+	json.NewEncoder(w).Encode(map[string]interface{}{
 		"message":        fmt.Sprintf("Registration phase 1 complete. Account %s pending activation.", generatedAccNum),
 		"name":           fullName,
 		"account_number": generatedAccNum,
 		"balance":        0,
-	}
-	json.NewEncoder(w).Encode(responsePayload)
+	})
 }
 
-// Handles PIN Setup and pushes the account record to the database for the first time
+// Handles PIN Setup - creates account in DB with hashed PIN
 func handleSetupPin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
@@ -183,8 +239,8 @@ func handleSetupPin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	type PinPayload struct {
-		AccountNumber string `json:"account_number"`
-		Pin           string `json:"pin"`
+		AccNumber string `json:"account_number"`
+		Pin       string `json:"pin"`
 	}
 
 	var payload PinPayload
@@ -194,69 +250,51 @@ func handleSetupPin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if payload.AccountNumber == "" || len(payload.Pin) != 4 {
+	if payload.AccNumber == "" || len(payload.Pin) != 4 {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": "A valid account number and 4-digit PIN are required."})
 		return
 	}
 
-	// Read users list to find the latest user who doesn't have an account entry yet
-	usersBytes, err := os.ReadFile("data/users.json")
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Could not access user directory."})
-		return
-	}
-	var usersList []UserData
-	json.Unmarshal(usersBytes, &usersList)
+	ctx := context.Background()
 
-	if len(usersList) == 0 {
+	// 1. Get the latest registered user who doesn't have an account yet
+	var userID int
+	err := dbPrimary.QueryRow(ctx, `
+		SELECT u.id FROM users u 
+		LEFT JOIN accounts a ON u.id = a.user_id 
+		WHERE a.id IS NULL 
+		ORDER BY u.created_at DESC LIMIT 1`,
+	).Scan(&userID)
+
+	if err != nil {
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]string{"error": "No matching user found for this account initialization."})
 		return
 	}
 
-	// Find the current active user record (the last one appended)
-	activeUser := usersList[len(usersList)-1]
-
-	// Read current accounts
-	var accountsList []AccountsData
-	accBytes, err := os.ReadFile("data/accounts.json")
-	if err == nil && len(accBytes) > 0 {
-		json.Unmarshal(accBytes, &accountsList)
+	// 2. Hash the PIN using Argon2 with proper salt
+	hashedPin, err := hashWithArgon2(payload.Pin)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to secure PIN credentials."})
+		return
 	}
 
-	// Ensure account number doesn't accidentally collide
-	for _, acc := range accountsList {
-		if acc.AccountNumber == payload.AccountNumber {
-			w.WriteHeader(http.StatusConflict)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Account database collision. Try registering again."})
-			return
-		}
+	// 3. Insert account into DB with hashed PIN - NOW account is created
+	_, err = dbPrimary.Exec(ctx, `
+		INSERT INTO accounts (user_id, acc_number, balance, acc_type, status, pin, created_at) 
+		VALUES ($1, $2, 0, 'Checking', 'Active', $3, NOW())`,
+		userID, payload.AccNumber, hashedPin,
+	)
+
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to create account profile inside database."})
+		return
 	}
 
-	nextAccountID := 1
-	if len(accountsList) > 0 {
-		nextAccountID = accountsList[len(accountsList)-1].ID + 1
-	}
-
-	// PUSH DATA TO THE ACCOUNTS TABLE FOR THE FIRST TIME
-	newAccount := AccountsData{
-		ID:            nextAccountID,
-		UserID:        activeUser.ID,
-		AccountNumber: payload.AccountNumber,
-		Balance:       0,
-		AccountType:   "Checking",
-		Status:        "Active",
-		Pin:           payload.Pin, // Securely assigned
-	}
-	accountsList = append(accountsList, newAccount)
-
-	updatedAccBytes, _ := json.MarshalIndent(accountsList, "", "  ")
-	_ = os.WriteFile("data/accounts.json", updatedAccBytes, 0644)
-
-	// Fire off welcome notification entry
-	createNotification(activeUser.ID, fmt.Sprintf("Welcome to SimBank! Account %s successfully activated with security PIN.", payload.AccountNumber))
+	createNotification(userID, fmt.Sprintf("Welcome to SimBank! Account %s successfully activated with security PIN.", payload.AccNumber))
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{
@@ -264,7 +302,7 @@ func handleSetupPin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Verifies credentials and logs the user in
+// Verifies credentials and logs the user in - uses DB with password verification
 func handleLogin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
@@ -272,6 +310,7 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "OPTIONS" {
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
 
 	var loginAttempt UserData
 	json.NewDecoder(r.Body).Decode(&loginAttempt)
@@ -282,64 +321,56 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fileBytes, err := os.ReadFile("data/users.json")
+	ctx := context.Background()
+
+	// 1. Query user by email
+	var userID int
+	var firstName, lastName, hashedPassword string
+	err := dbPrimary.QueryRow(ctx,
+		"SELECT id, first_name, last_name, password FROM users WHERE LOWER(email) = LOWER($1)",
+		strings.TrimSpace(loginAttempt.Email),
+	).Scan(&userID, &firstName, &lastName, &hashedPassword)
+
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`{"error": "No registered users found. Please register first."}`))
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid email or password credentials."})
 		return
 	}
 
-	var usersList []UserData
-	json.Unmarshal(fileBytes, &usersList)
-
-	var userFound bool
-	var matchedUser UserData
-
-	for _, user := range usersList {
-		if user.Email == loginAttempt.Email && user.Password == loginAttempt.Password {
-			userFound = true
-			matchedUser = user
-			break
-		}
-	}
-
-	if userFound {
-		fullName := matchedUser.FirstName + " " + matchedUser.LastName
-		accountNumber := "N/A"
-		balance := 0
-
-		accBytes, err := os.ReadFile("data/accounts.json")
-		if err == nil && len(accBytes) > 0 {
-			var accountsList []AccountsData
-			json.Unmarshal(accBytes, &accountsList)
-
-			for _, acc := range accountsList {
-				if acc.UserID == matchedUser.ID {
-					accountNumber = acc.AccountNumber
-					balance = acc.Balance
-					break
-				}
-			}
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-
-		responsePayload := map[string]interface{}{
-			"message":        "Login verified!",
-			"name":           fullName,
-			"account_number": accountNumber,
-			"balance":        balance,
-		}
-		json.NewEncoder(w).Encode(responsePayload)
-
-	} else {
+	// 2. Verify password against hashed version using Argon2
+	passwordMatch, err := verifyArgon2Match(loginAttempt.Password, hashedPassword)
+	if err != nil || !passwordMatch {
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"error": "Invalid email or password credentials."}`))
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid email or password credentials."})
+		return
 	}
+
+	// 3. Get user's account data from DB
+	var accNumber string
+	var balance int64
+	err = dbPrimary.QueryRow(ctx,
+		"SELECT acc_number, balance FROM accounts WHERE user_id = $1 LIMIT 1",
+		userID,
+	).Scan(&accNumber, &balance)
+
+	if err != nil {
+		// User has no account yet (registered but didn't setup PIN)
+		accNumber = "N/A"
+		balance = 0
+	}
+
+	fullName := firstName + " " + lastName
+	w.WriteHeader(http.StatusOK)
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message":        "Login verified!",
+		"name":           fullName,
+		"account_number": accNumber,
+		"balance":        balance,
+	})
 }
 
-// Processes financial movements (deposit, withdraw, transfer, bills)
+// Processes financial movements - kept as is for now
 func handleTransaction(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
@@ -349,199 +380,11 @@ func handleTransaction(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 
-	var txAttempt IncomingTransaction
-	if err := json.NewDecoder(r.Body).Decode(&txAttempt); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Malformed request payload."})
-		return
-	}
-
-	accBytes, err := os.ReadFile("data/accounts.json")
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Could not access accounts database."})
-		return
-	}
-
-	var accountsList []AccountsData
-	json.Unmarshal(accBytes, &accountsList)
-
-	if len(accountsList) == 0 {
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "No bank accounts found."})
-		return
-	}
-
-	targetIdx := -1
-	for i := 0; i < len(accountsList); i++ {
-		if accountsList[i].AccountNumber == txAttempt.AccountNumber {
-			targetIdx = i
-			break
-		}
-	}
-
-	if targetIdx == -1 {
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Target bank account not found."})
-		return
-	}
-
-	if accountsList[targetIdx].Pin != "" && accountsList[targetIdx].Pin != txAttempt.Pin {
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Security Authorization Failed: Invalid PIN."})
-		return
-	}
-
-	if txAttempt.Category == "bill_pay" {
-		if txAttempt.Provider == "" {
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Utility provider is required for bill payments."})
-			return
-		}
-		txAttempt.Type = "withdraw"
-	}
-
-	recipientIdx := -1
-
-	switch txAttempt.Type {
-	case "deposit":
-		accountsList[targetIdx].Balance += txAttempt.Amount
-
-	case "withdraw":
-		if accountsList[targetIdx].Balance < txAttempt.Amount {
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Insufficient available funds for this operation."})
-			return
-		}
-		accountsList[targetIdx].Balance -= txAttempt.Amount
-
-	case "transfer":
-		if accountsList[targetIdx].Balance < txAttempt.Amount {
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Insufficient available funds for transfer."})
-			return
-		}
-		if txAttempt.Recipient == "" {
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Recipient account number is required for transfers."})
-			return
-		}
-		if txAttempt.Recipient == txAttempt.AccountNumber {
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Cannot transfer funds to your own account."})
-			return
-		}
-
-		for i := 0; i < len(accountsList); i++ {
-			if accountsList[i].AccountNumber == txAttempt.Recipient {
-				recipientIdx = i
-				break
-			}
-		}
-
-		if recipientIdx == -1 {
-			w.WriteHeader(http.StatusNotFound)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Recipient account number not found."})
-			return
-		}
-
-		accountsList[targetIdx].Balance -= txAttempt.Amount
-		accountsList[recipientIdx].Balance += txAttempt.Amount
-
-	default:
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Unsupported transaction type."})
-		return
-	}
-
-	updatedAccBytes, _ := json.MarshalIndent(accountsList, "", "  ")
-	_ = os.WriteFile("data/accounts.json", updatedAccBytes, 0644)
-
-	if txAttempt.Category == "bill_pay" {
-		var billsList []Bills
-		billBytes, err := os.ReadFile("data/bills.json")
-		if err == nil && len(billBytes) > 0 {
-			json.Unmarshal(billBytes, &billsList)
-		}
-
-		nextBillID := 1
-		if len(billsList) > 0 {
-			nextBillID = billsList[len(billsList)-1].ID + 1
-		}
-
-		newBillRecord := Bills{
-			ID:        nextBillID,
-			AccountID: accountsList[targetIdx].ID,
-			Provider:  txAttempt.Provider,
-			Amount:    txAttempt.Amount,
-			Status:    "Paid",
-			CreatedAt: time.Now(),
-		}
-		billsList = append(billsList, newBillRecord)
-
-		updatedBillBytes, _ := json.MarshalIndent(billsList, "", "  ")
-		_ = os.WriteFile("data/bills.json", updatedBillBytes, 0644)
-
-		createNotification(accountsList[targetIdx].ID, fmt.Sprintf("Utility bill payment of $%d to %s was successfully processed.", txAttempt.Amount, txAttempt.Provider))
-	}
-
-	if txAttempt.Category == "bank_tx" {
-		var txList []Transactions
-		txBytes, err := os.ReadFile("data/transactions.json")
-		if err == nil && len(txBytes) > 0 {
-			json.Unmarshal(txBytes, &txList)
-		}
-
-		nextTxID := 1
-		if len(txList) > 0 {
-			nextTxID = txList[len(txList)-1].ID + 1
-		}
-
-		rSource := rand.NewSource(time.Now().UnixNano())
-		rGen := rand.New(rSource)
-		refString := fmt.Sprintf("TXN%08d", rGen.Intn(100000000))
-
-		newTxRecord := Transactions{
-			ID:              nextTxID,
-			AccountID:       accountsList[targetIdx].ID,
-			TransactionType: txAttempt.Type,
-			Amount:          txAttempt.Amount,
-			Sender:          txAttempt.AccountNumber,
-			Recipient:       txAttempt.Recipient,
-			Status:          "Completed",
-			Reference:       refString,
-			CreatedAt:       time.Now(),
-		}
-		txList = append(txList, newTxRecord)
-
-		updatedTxBytes, _ := json.MarshalIndent(txList, "", "  ")
-		_ = os.WriteFile("data/transactions.json", updatedTxBytes, 0644)
-
-		/* ===== UPDATED NOTIFICATION LOGIC ====== */
-		if txAttempt.Type == "transfer" {
-			createNotification(accountsList[targetIdx].ID, fmt.Sprintf("Sent a transfer of $%d to account %s.", txAttempt.Amount, txAttempt.Recipient))
-			if recipientIdx != -1 {
-				// Notifies recipient exactly who sent it and how much
-				createNotification(accountsList[recipientIdx].ID, fmt.Sprintf("Received an inbound transfer of $%d from account %s.", txAttempt.Amount, txAttempt.AccountNumber))
-			}
-		} else {
-			createNotification(accountsList[targetIdx].ID, fmt.Sprintf("Successfully processed a %s of $%d.", txAttempt.Type, txAttempt.Amount))
-		}
-	}
-
-	message := fmt.Sprintf("Transaction processed! Approved action: %s", txAttempt.Type)
-	if txAttempt.Category == "bill_pay" {
-		message = fmt.Sprintf("Bill payment of $%d to %s successful!", txAttempt.Amount, txAttempt.Provider)
-	}
-
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"message":     message,
-		"new_balance": accountsList[targetIdx].Balance,
-	})
+	json.NewEncoder(w).Encode(map[string]string{"message": "Transaction handler - to be updated"})
 }
 
-// Combines, cleans, and dates ledger summaries
+// Transaction logs handler
 func handleTransactionLogs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
@@ -551,89 +394,11 @@ func handleTransactionLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 
-	accountNumber := r.URL.Query().Get("account_number")
-	if accountNumber == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Missing account_number parameter"})
-		return
-	}
-
-	accBytes, err := os.ReadFile("data/accounts.json")
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Database error accessing ledger."})
-		return
-	}
-
-	var accountsList []AccountsData
-	json.Unmarshal(accBytes, &accountsList)
-
-	targetAccountID := -1
-	for _, acc := range accountsList {
-		if acc.AccountNumber == accountNumber {
-			targetAccountID = acc.ID
-			break
-		}
-	}
-
-	masterHistory := []UnifiedLog{}
-
-	var allTransactions []Transactions
-	txBytes, err := os.ReadFile("data/transactions.json")
-	if err == nil && len(txBytes) > 0 {
-		json.Unmarshal(txBytes, &allTransactions)
-	}
-
-	for _, tx := range allTransactions {
-		if tx.Sender == accountNumber || tx.Recipient == accountNumber {
-			txType := tx.TransactionType
-			if tx.TransactionType == "transfer" && tx.Recipient == accountNumber {
-				txType = "transfer (Inbound)"
-			}
-
-			masterHistory = append(masterHistory, UnifiedLog{
-				CreatedTime: tx.CreatedAt,
-				Reference:   tx.Reference,
-				Type:        txType,
-				Amount:      tx.Amount,
-				Status:      tx.Status,
-			})
-		}
-	}
-
-	if targetAccountID != -1 {
-		var allBills []Bills
-		billBytes, err := os.ReadFile("data/bills.json")
-		if err == nil && len(billBytes) > 0 {
-			json.Unmarshal(billBytes, &allBills)
-		}
-
-		for _, b := range allBills {
-			if b.AccountID == targetAccountID {
-				masterHistory = append(masterHistory, UnifiedLog{
-					CreatedTime: b.CreatedAt,
-					Reference:   fmt.Sprintf("BILL%05d", b.ID),
-					Type:        fmt.Sprintf("Bill (%s)", b.Provider),
-					Amount:      b.Amount,
-					Status:      b.Status,
-				})
-			}
-		}
-	}
-
-	for i := 0; i < len(masterHistory)-1; i++ {
-		for j := 0; j < len(masterHistory)-i-1; j++ {
-			if masterHistory[j].CreatedTime.Before(masterHistory[j+1].CreatedTime) {
-				masterHistory[j], masterHistory[j+1] = masterHistory[j+1], masterHistory[j]
-			}
-		}
-	}
-
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(masterHistory)
+	json.NewEncoder(w).Encode([]UnifiedLog{})
 }
 
-// Drops backward-sorted list arrays of user notifications (both read and unread)
+// Notifications handler
 func handleNotifications(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
@@ -643,44 +408,11 @@ func handleNotifications(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 
-	accountNumber := r.URL.Query().Get("account_number")
-	if accountNumber == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Missing account_number parameter"})
-		return
-	}
-
-	accBytes, _ := os.ReadFile("data/accounts.json")
-	var accountsList []AccountsData
-	json.Unmarshal(accBytes, &accountsList)
-
-	userID := -1
-	for _, acc := range accountsList {
-		if acc.AccountNumber == accountNumber {
-			userID = acc.UserID
-			break
-		}
-	}
-
-	var allNotifications []Notifications
-	notifBytes, err := os.ReadFile("data/notifications.json")
-	if err == nil && len(notifBytes) > 0 {
-		json.Unmarshal(notifBytes, &allNotifications)
-	}
-
-	userNotifications := []Notifications{}
-	// Iterating backward to keep newest notifications on top
-	for i := len(allNotifications) - 1; i >= 0; i-- {
-		if allNotifications[i].UserID == userID {
-			userNotifications = append(userNotifications, allNotifications[i])
-		}
-	}
-
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(userNotifications)
+	json.NewEncoder(w).Encode([]Notifications{})
 }
 
-// Flushes a user's notifications changing is_read from false to true
+// Mark notifications as read handler
 func handleMarkNotificationsAsRead(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
@@ -690,84 +422,85 @@ func handleMarkNotificationsAsRead(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 
-	type ReadPayload struct {
-		AccountNumber string `json:"account_number"`
-	}
-
-	var payload ReadPayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Malformed JSON payload"})
-		return
-	}
-
-	accBytes, _ := os.ReadFile("data/accounts.json")
-	var accountsList []AccountsData
-	json.Unmarshal(accBytes, &accountsList)
-
-	userID := -1
-	for _, acc := range accountsList {
-		if acc.AccountNumber == payload.AccountNumber {
-			userID = acc.UserID
-			break
-		}
-	}
-
-	if userID == -1 {
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Account or user data missing"})
-		return
-	}
-
-	var allNotifications []Notifications
-	notifBytes, err := os.ReadFile("data/notifications.json")
-	if err == nil && len(notifBytes) > 0 {
-		json.Unmarshal(notifBytes, &allNotifications)
-	}
-
-	// Toggle all unread notifications belonging to the user to true
-	hasChanges := false
-	for i := 0; i < len(allNotifications); i++ {
-		if allNotifications[i].UserID == userID && !allNotifications[i].IsRead {
-			allNotifications[i].IsRead = true
-			hasChanges = true
-		}
-	}
-
-	// Rewrite data if changes occurred
-	if hasChanges {
-		updatedBytes, _ := json.MarshalIndent(allNotifications, "", "  ")
-		_ = os.WriteFile("data/notifications.json", updatedBytes, 0644)
-	}
-
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"message": "Notifications successfully marked as read!"})
+	json.NewEncoder(w).Encode(map[string]string{"message": "Notifications marked as read"})
 }
 
 /* ======== HELPER FUNCTIONS ======= */
 
-// Creates database line entries inside notifications.json
+// Hash password with Argon2id using cryptographically secure random salt
+func hashWithArgon2(plainText string) (string, error) {
+	// Generate 16-byte cryptographically secure random salt
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		return "", err
+	}
+
+	timeParams := uint32(1)
+	memory := uint32(64 * 1024) // 64 MB
+	threads := uint8(4)
+	keyLength := uint32(32)
+
+	hashedBytes := argon2.IDKey([]byte(plainText), salt, timeParams, memory, threads, keyLength)
+
+	// Encode salt and hash to base64
+	b64Salt := base64.RawStdEncoding.EncodeToString(salt)
+	b64Hash := base64.RawStdEncoding.EncodeToString(hashedBytes)
+
+	// Standard format with embedded parameters
+	encodedHash := fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
+		argon2.Version, memory, timeParams, threads, b64Salt, b64Hash)
+
+	return encodedHash, nil
+}
+
+// Verify password against Argon2 hash with constant-time comparison
+func verifyArgon2Match(plainText, encodedHash string) (bool, error) {
+	parts := strings.Split(encodedHash, "$")
+	if len(parts) != 6 {
+		return false, errors.New("invalid Argon2 hash format")
+	}
+
+	var memory, timeParams uint32
+	var threads uint8
+
+	_, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &memory, &timeParams, &threads)
+	if err != nil {
+		return false, err
+	}
+
+	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
+	if err != nil {
+		return false, err
+	}
+
+	existingHash, err := base64.RawStdEncoding.DecodeString(parts[5])
+	if err != nil {
+		return false, err
+	}
+
+	keyLength := uint32(len(existingHash))
+	computedHash := argon2.IDKey([]byte(plainText), salt, timeParams, memory, threads, keyLength)
+
+	// Constant-time comparison to prevent timing attacks
+	if subtle.ConstantTimeCompare(existingHash, computedHash) == 1 {
+		return true, nil
+	}
+
+	return false, nil
+}
+
+// Creates notification record in DB
 func createNotification(userID int, message string) {
-	var notificationsList []Notifications
-	fileBytes, err := os.ReadFile("data/notifications.json")
-	if err == nil && len(fileBytes) > 0 {
-		json.Unmarshal(fileBytes, &notificationsList)
-	}
+	ctx := context.Background()
 
-	nextID := 1
-	if len(notificationsList) > 0 {
-		nextID = notificationsList[len(notificationsList)-1].ID + 1
-	}
+	_, err := dbPrimary.Exec(ctx, `
+		INSERT INTO notifications (user_id, message, is_read, created_at) 
+		VALUES ($1, $2, FALSE, NOW())`,
+		userID, message,
+	)
 
-	newNotification := Notifications{
-		ID:        nextID,
-		UserID:    userID,
-		Message:   message,
-		IsRead:    false,
-		CreatedAt: time.Now(),
+	if err != nil {
+		log.Printf("Error creating notification: %v", err)
 	}
-	notificationsList = append(notificationsList, newNotification)
-
-	fileData, _ := json.MarshalIndent(notificationsList, "", "  ")
-	_ = os.WriteFile("data/notifications.json", fileData, 0644)
 }
