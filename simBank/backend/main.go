@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -89,25 +90,103 @@ type IncomingTransaction struct {
 }
 
 type dbCluster struct {
+	mu        sync.RWMutex
 	primarydb *pgxpool.Pool
 	standbydb *pgxpool.Pool
 }
 
 var activedb dbCluster
 
+// Prefer Primary for Write Operations.
+func getWriteDB() *pgxpool.Pool {
+	activedb.mu.RLock()
+	defer activedb.mu.RUnlock()
+	return activedb.primarydb
+}
+
+// Prefer Standby for Read Operations.
 func getReadDB() *pgxpool.Pool {
+	activedb.mu.RLock()
+	defer activedb.mu.RUnlock()
+
 	if activedb.standbydb != nil {
 		return activedb.standbydb
 	}
 	return activedb.primarydb
 }
 
+// Monitor the DBs
+func startMonitor(ctx context.Context) {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+
+	primaryFailures := 0
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("Stopping DB health monitor...")
+			return
+
+		case <-ticker.C:
+			// Get current primary
+			primary := getWriteDB()
+			if primary == nil {
+				return
+			}
+
+			// Ping Primary with a 2-second timeout
+			pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			err := primary.Ping(pingCtx)
+			cancel()
+
+			if err != nil {
+				primaryFailures++
+				log.Printf("[WARN] Primary ping failed (%d/3): %v", primaryFailures, err)
+
+				// Trigger failover if primary fails 3 times in a row
+				if primaryFailures >= 3 {
+					log.Println(":( Primary DB failed 3 consecutive health checks. Initiating failover...")
+
+					activedb.mu.Lock()
+					// Swap: Standby becomes the main DB, clear old primary
+					activedb.primarydb = activedb.standbydb
+					activedb.standbydb = nil
+					activedb.mu.Unlock()
+
+					log.Println(":) Internal pool swap complete. Traffic redirected to Standby.")
+					return // Stop monitoring since primary topology has changed
+				}
+			} else {
+				primaryFailures = 0 // Reset counter on successful ping
+			}
+
+			// 4. Ping Standby
+			activedb.mu.RLock()
+			standby := activedb.standbydb
+			activedb.mu.RUnlock()
+
+			if standby != nil {
+				sPingCtx, sCancel := context.WithTimeout(ctx, 2*time.Second)
+				if err := standby.Ping(sPingCtx); err != nil {
+					log.Printf("[WARN] Standby node is unreachable: %v. Removing from read pool.", err)
+
+					activedb.mu.Lock()
+					activedb.standbydb = nil // Falling back read traffic to primary
+					activedb.mu.Unlock()
+				}
+				sCancel()
+			}
+		}
+	}
+}
+
 /* =============== MAIN FUNCTION ================ */
+
 func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
 
 	primaryConnStr := "postgres://user_name:password@localhost:port_number/database_name?sslmode=disable"
 	standbyConnStr := "postgres://user_name:password@localhost:port_number/database_name?sslmode=disable"
@@ -153,6 +232,9 @@ func main() {
 	}
 
 	fmt.Println(" Connected database:", databaseName)
+
+	// Run Background check.
+	go startMonitor(context.Background())
 
 	/* ===== API ROUTES ==== */
 	http.HandleFunc("/api/register", handleRegister)
@@ -837,3 +919,4 @@ func createNotification(userID int, message string) {
 		log.Printf("Error creating notification: %v", err)
 	}
 }
+
