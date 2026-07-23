@@ -128,6 +128,7 @@ func startMonitor(ctx context.Context) {
 	defer ticker.Stop()
 
 	primaryFailures := 0
+	wasStandbyDown := false // Tracks state for recovery logging
 
 	for {
 		select {
@@ -149,9 +150,7 @@ func startMonitor(ctx context.Context) {
 				continue
 			}
 
-			// ==========================================
-			// 1. MONITOR STANDBY NODE (Graceful Fallback & Recovery)
-			// ==========================================
+			// MONITOR STANDBY NODE (Graceful Fallback & Recovery)
 			if currentStandby != nil {
 				sCtx, sCancel := context.WithTimeout(ctx, 2*time.Second)
 				err := currentStandby.Ping(sCtx)
@@ -162,6 +161,7 @@ func startMonitor(ctx context.Context) {
 					activedb.mu.Lock()
 					activedb.standbydb = nil // Forces getReadDB() to use Primary
 					activedb.mu.Unlock()
+					wasStandbyDown = true // Flag that it went down
 				}
 			} else {
 				// Standby is nil. Let's see if it came back online!
@@ -180,7 +180,14 @@ func startMonitor(ctx context.Context) {
 							activedb.mu.Lock()
 							activedb.standbydb = newPool
 							activedb.mu.Unlock()
-							log.Printf(":) [SUCCESS] Node %s is back online and in recovery mode! Read traffic restored.", targetIP)
+
+							// Clear notification flag and print clear recovery status
+							if wasStandbyDown {
+								log.Printf(":) [HEALED] Standby node %s has come back online and caught up! Read traffic safely re-enabled.", targetIP)
+								wasStandbyDown = false
+							} else {
+								log.Printf(":) [SUCCESS] Node %s is online and in recovery mode! Read traffic restored.", targetIP)
+							}
 						} else {
 							// Node is up, but it thinks it's a primary (needs pg_rewind)
 							log.Printf("[INFO] Node %s is online but not acting as Standby yet. Waiting for rewind...", targetIP)
@@ -193,9 +200,7 @@ func startMonitor(ctx context.Context) {
 				sCancel()
 			}
 
-			// ==========================================
-			// 2. MONITOR PRIMARY NODE (Failover Trigger)
-			// ==========================================
+			//  MONITOR PRIMARY NODE (Failover Trigger)
 			pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 			err := currentPrimary.Ping(pingCtx)
 			cancel()
@@ -248,47 +253,72 @@ func startMonitor(ctx context.Context) {
 }
 
 /* =============== MAIN FUNCTION ================ */
-
 func main() {
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	primaryConnStr := "postgres://user_name:password@host_address:port_number/database_name?sslmode=disable"
-	standbyConnStr := "postgres://user_name:password@host_address:port_number/database_name?sslmode=disable"
+	nodeIPs := []string{"host_address_1", "host_address_2"}
+	var primaryPool, standbyPool *pgxpool.Pool
+	var primaryIP, standbyIP string
 
-	var err error
-	activedb.primarydb, err = pgxpool.New(ctx, primaryConnStr)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "FATAL: Unable to connect to Database: %v\n", err)
-		os.Exit(1)
-	}
-	defer activedb.primarydb.Close()
+	fmt.Println("Probing database cluster nodes for roles...")
 
-	if err = activedb.primarydb.Ping(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "FATAL: Database server unreachable: %v\n", err)
-		os.Exit(1)
-	}
+	// Dynamically discover who is Primary and who is Standby on startup
+	for _, ip := range nodeIPs {
+		connStr := fmt.Sprintf("postgres://user_name:password@%s:port_number/database_name?sslmode=mode_here", ip)
+		pool, err := pgxpool.New(ctx, connStr)
+		if err != nil {
+			log.Printf("[WARN] Failed to create pool for %s: %v", ip, err)
+			continue
+		}
 
-	fmt.Println("Connected to PostgreSQL successfully!")
+		if err = pool.Ping(ctx); err != nil {
+			log.Printf("[WARN] Node %s is unreachable: %v", ip, err)
+			pool.Close()
+			continue
+		}
 
-	// Create a connection to standby db
-	activedb.standbydb, err = pgxpool.New(ctx, standbyConnStr)
-	if err != nil {
-		log.Printf(" :( WARNING: Standby DB pool creation failed: %v (Proceeding with Primary only)\n", err)
-	} else {
-		if err = activedb.standbydb.Ping(ctx); err != nil {
-			log.Printf(":( WARNING: Standby DB server unreachable: %v (Proceeding with Primary only)\n", err)
-			activedb.standbydb = nil
+		var isRecovery bool
+		err = pool.QueryRow(ctx, "SELECT pg_is_in_recovery();").Scan(&isRecovery)
+		if err != nil {
+			log.Printf("[WARN] Failed to query recovery status on %s: %v", ip, err)
+			pool.Close()
+			continue
+		}
+
+		if !isRecovery {
+			primaryPool = pool
+			primaryIP = ip
+			fmt.Printf(":) Discovered active Primary at %s\n", ip)
 		} else {
-			fmt.Println(":) Connected to Standby PostgreSQL successfully!")
-
-			defer activedb.standbydb.Close()
+			standbyPool = pool
+			standbyIP = ip
+			fmt.Printf(":) Discovered active Standby at %s\n", ip)
 		}
 	}
 
+	if primaryPool == nil {
+		fmt.Fprintf(os.Stderr, "FATAL: No active primary database found in the cluster!\n")
+		os.Exit(1)
+	}
+
+	// Assign discovered pools and IPs to our active database cluster state
+	activedb.mu.Lock()
+	activedb.primarydb = primaryPool
+	activedb.standbydb = standbyPool
+	activedb.primaryIP = primaryIP
+	activedb.standbyIP = standbyIP
+	activedb.mu.Unlock()
+
+	// Handle optional standby warning gracefully
+	if standbyPool == nil {
+		log.Println(":( WARNING: Standby DB server unreachable. Proceeding with Primary only.")
+	} else {
+		fmt.Println(":) Connected to Standby PostgreSQL successfully!")
+	}
+
 	var databaseName string
-	err = activedb.primarydb.QueryRow(
+	err := activedb.primarydb.QueryRow(
 		context.Background(),
 		"SELECT current_database();",
 	).Scan(&databaseName)
@@ -297,9 +327,9 @@ func main() {
 		log.Fatal("Query failed:", err)
 	}
 
-	fmt.Println(" Connected database:", databaseName)
+	fmt.Println("Connected database:", databaseName)
 
-	// Run Background check.
+	// Run Background check & monitoring loop.
 	go startMonitor(context.Background())
 
 	/* ===== API ROUTES ==== */
@@ -687,7 +717,7 @@ func handleTransaction(w http.ResponseWriter, r *http.Request) {
 
 		// Create a dynamic notification for recipient asynchronously later or register during tx
 		_, _ = tx.Exec(ctx, "INSERT INTO notifications (user_id, message, is_read, created_at) VALUES ($1, $2, FALSE, NOW())",
-			destUserID, fmt.Sprintf("You received a transfer of %d from account %s. Ref: %s", txReq.Amount, txReq.AccNumber, txReference))
+			destUserID, fmt.Sprintf("You received a transfer of UGX %d from account %s. Ref: %s", txReq.Amount, txReq.AccNumber, txReference))
 
 	case "pay_bill":
 		if txReq.Provider == "" {
@@ -751,7 +781,7 @@ func handleTransaction(w http.ResponseWriter, r *http.Request) {
 	_, err = tx.Exec(ctx, `
 		INSERT INTO notifications (user_id, message, is_read, created_at) 
 		VALUES ($1, $2, FALSE, NOW())`,
-		userID, fmt.Sprintf("Transaction '%s' of %d completed successfully. Ref: %s", txReq.Category, txReq.Amount, txReference),
+		userID, fmt.Sprintf("Transaction '%s' of UGX %d completed successfully. Ref: %s", txReq.Category, txReq.Amount, txReference),
 	)
 
 	// 6. Commit transaction cleanly to disk
