@@ -115,7 +115,7 @@ async function handleAuth(e) {
             if (data.account_number) {
                 loggedInAccount = data.account_number; // Save globally for other APIs
                 document.getElementById('user-display-account').innerText = data.account_number;
-                document.getElementById('user-display-balance').innerText = `$${Number(data.balance).toFixed(2)}`;
+                document.getElementById('user-display-balance').innerText = `UGX ${Number(data.balance).toFixed(2)}`;
             } else {
                 document.getElementById('user-display-account').innerText = "Please log in to view account";
                 document.getElementById('user-display-balance').innerText = "$0.00";
@@ -319,7 +319,7 @@ async function confirmTransaction(e) {
 
         if(response.ok){
             console.log(`Success ${data.message}`);
-            document.getElementById('user-display-balance').innerText = `$${Number(data.balance).toFixed(2)}`;
+            document.getElementById('user-display-balance').innerText = `UGX ${Number(data.balance).toFixed(2)}`;
             
             // Clean UI input elements explicitly 
             const txAmountInput = document.getElementById('tx-amount');
@@ -410,7 +410,7 @@ async function fetchAndDisplayLogs() {
                     <td>${formatTimestamp(log.timestamp || log.time)}</td>
                     <td><code>${log.reference || log.id || 'N/A'}</code></td>
                     <td><span class="tx-type-badge">${log.type ? log.type.toUpperCase() : 'UNKNOWN'}</span></td>
-                    <td>$${Number(log.amount).toFixed(2)}</td>
+                    <td>UGX ${Number(log.amount).toFixed(2)}</td>
                     <td><span class="status-${statusClass}">${log.status || 'COMPLETED'}</span></td>
                 `;
                 

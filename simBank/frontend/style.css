@@ -424,6 +424,15 @@ code {
     display: none !important;
 }
 
+#active-acc-btn {
+    background-color: #10b981; 
+}
+
+.modal-buttons button:last-of-type {
+    background: #6b7280; 
+    color: #ffffff;
+}
+
 /* --- Responsive Layout --- */
 @media (max-width: 900px) {
     .sidebar {
